@@ -484,7 +484,7 @@ QWEN3_MESSAGE_TEMPLATE = "<|im_start|>{role}\n{content}<|im_end|>\n"
 
 def apply_chat_template(messages: list[dict]) -> str:
     """Convert OpenAI chat messages to Qwen3 prompt format."""
-    system = "You are a helpful assistant."
+    system = "You are a helpful assistant. /no_think"
     parts = []
 
     for msg in messages:

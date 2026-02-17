@@ -56,7 +56,7 @@ class TestChatTemplate:
     def test_default_system_prompt(self):
         messages = [{"role": "user", "content": "Hi"}]
         prompt = apply_chat_template(messages)
-        assert "You are a helpful assistant." in prompt
+        assert "You are a helpful assistant. /no_think" in prompt
 
 
 class TestProxyApp:

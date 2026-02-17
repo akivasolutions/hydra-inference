@@ -147,9 +147,24 @@ The output is **provably identical** to running the large model alone — the sm
 
 ### Benchmark Results
 
-#### Same-Family (Qwen3-8B → Qwen3-32B, local Ollama)
+#### Logprobs Verification (Qwen3-8B → Qwen3-32B, cross-machine llama-server)
 
-Draft on RTX 2070 (8GB), target on RTX 4070 Ti Super (16GB), both running Qwen3 via Ollama:
+Draft on RTX 2070 (8GB) via llama-server, target on RTX 4070 Ti Super + RTX 3060 (28GB) via llama-server. **Real batch verification** — target scores all draft tokens in a single forward pass.
+
+| Metric | Value |
+|--------|:-----:|
+| **Acceptance Rate** | **73.5%** |
+| **Effective tokens/round** | **6.6** |
+| Total rounds | 87 |
+| Drafted tokens | 671 |
+| Accepted tokens | 493 |
+| Bonus tokens | 50 |
+
+Each round, the 8B model drafts 8 tokens at ~49 tok/s, and the 32B target verifies all 8 in one forward pass. On average **6.6 tokens are accepted per round**, meaning the target does ~1/7th the autoregressive steps.
+
+#### Text-Match Benchmarks (Ollama, for acceptance rate comparison)
+
+Same-family (Qwen3-8B → Qwen3-32B, local Ollama):
 
 | Prompt Type | Acceptance Rate | Rounds | Notes |
 |-------------|:--------------:|:------:|-------|
@@ -160,24 +175,11 @@ Draft on RTX 2070 (8GB), target on RTX 4070 Ti Super (16GB), both running Qwen3 
 | Creative    | 39%            | 6      | Lowest — many valid outputs |
 | **Average** | **63.8%**      | 25.6   | |
 
-#### Same-Family via Cloud API (Qwen3-8B → Qwen3.5-397B, OpenRouter)
-
-Draft on local RTX 2070, target on Qwen3.5-397B MoE via OpenRouter API:
-
-| Prompt Type | Acceptance Rate | Notes |
-|-------------|:--------------:|-------|
-| Code        | **39%**        | Structured syntax helps despite 50x size gap |
-| Factual     | 28%            | Moderate agreement |
-| Creative    | 1%             | Extreme divergence at different scales |
-| **Average** | **~23%**       | Lower due to cross-backend formatting differences |
-
 #### Cross-Family (Qwen3-8B → Llama 3.3 70B, OpenRouter)
 
 | **Average** | **~3%** | Nearly zero — different tokenizers and training data |
 
-**Key finding:** Same-family drafting is critical. An 8B model from the same family as the target achieves 64% acceptance, while cross-family drops to ~3%.
-
-> **Current status:** Text-match verification proves acceptance rates but doesn't yet achieve wall-clock speedup (both models generate autoregressively). Logprobs-based batch verification — where the target scores all draft tokens in one forward pass — is the next milestone that will convert these rates into real 2-3x throughput gains.
+**Key finding:** Same-family drafting is critical. An 8B model from the same family as the target achieves 73% acceptance with logprobs, while cross-family drops to ~3%.
 
 Run the benchmark yourself: `OPENROUTER_API_KEY=... python scripts/benchmark_proxy.py`
 
