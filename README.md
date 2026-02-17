@@ -1,31 +1,32 @@
 # Hydra-Inference
 
-Mixed-vendor GPU inference cluster manager. Pools CUDA and ROCm GPUs across machines into a single inference endpoint using [llama.cpp's RPC backend](https://github.com/ggml-org/llama.cpp/blob/master/tools/rpc).
+Mixed-vendor GPU inference cluster manager with speculative decoding proxy. Pools CUDA and ROCm GPUs across machines using [llama.cpp RPC](https://github.com/ggml-org/llama.cpp/blob/master/tools/rpc), and accelerates inference via application-layer speculative decoding across network-separated servers.
 
-## Why
+## Two Modes
 
-A single machine rarely has enough VRAM for large models. Hydra lets you combine GPUs from different machines and vendors — for example, AMD 7900 XTX cards on a Linux box with NVIDIA RTX cards on a Windows desktop — and present them as one OpenAI-compatible API.
+### 1. RPC Cluster — Pool GPUs into one endpoint
 
-## Architecture
+Combine GPUs from different machines and vendors into a single OpenAI-compatible API. The coordinator distributes model layers across local and remote GPUs.
+
+### 2. Speculative Decoding Proxy — Draft + Verify across machines
+
+A fast small model (e.g., 8B on a consumer GPU) drafts candidate tokens, a large model (e.g., 72B on a server or cloud API) verifies them in batch. Output quality is **identical to running the large model alone**, but 2-3x faster because batch verification is much cheaper than autoregressive generation.
 
 ```
-┌──────────────────────────────────────────────────┐
-│           ROCm Machine (Ubuntu)                  │
-│  llama-server (HIP + RPC backends)               │
-│  GPU0: 7900 XTX (24GB) ── local layers           │
-│  GPU1: 7900 XTX (24GB) ── local layers           │
-│  --rpc 192.168.1.100:50052,50053                 │
-│  Serves OpenAI-compatible API on :8080           │
-└──────────────┬───────────────────────────────────┘
-               │ TCP / LAN
-┌──────────────▼───────────────────────────────────┐
-│        Windows Desktop (192.168.1.100)           │
-│  rpc-server :50052 → RTX 4070 Ti Super (16GB)   │
-│  rpc-server :50053 → RTX 3060 (12GB)            │
-└──────────────────────────────────────────────────┘
+Client (OpenAI API)
+        │
+        ▼
+┌─────────────────────────┐
+│   Hydra Proxy (:8088)   │  Python async server
+│   Speculation Loop:     │
+│   1. Draft 8 tokens     │──► Draft: Qwen3-8B (fast, local)
+│   2. Verify batch       │──► Target: Qwen3-72B (accurate, local or API)
+│   3. Accept/reject      │
+│   4. Stream to client   │
+└─────────────────────────┘
 ```
 
-The machine with the most VRAM acts as coordinator (runs `llama-server`). Remote GPUs contribute layers via `rpc-server` over TCP. Hydra calculates the optimal `--tensor-split` automatically from VRAM sizes.
+**Why not just use RPC?** RPC ships 100-300 MB of tensor data per step over the network. The speculative proxy ships token IDs (bytes). For models that fit on a single machine's VRAM, speculation is dramatically faster.
 
 ## Quick Start
 
@@ -38,7 +39,32 @@ pip install -e .
 
 # Edit topology for your hardware
 vim configs/cluster.yaml
+```
 
+### Speculative Decoding Proxy
+
+```bash
+# Start the proxy (draft + target servers must be running)
+hydra proxy start
+
+# Check health and acceptance rate stats
+hydra proxy status
+
+# Test it
+curl http://localhost:8088/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+
+# Detailed stats
+curl http://localhost:8088/v1/hydra/status
+
+# Stop
+hydra proxy stop
+```
+
+### RPC Cluster
+
+```bash
 # Check cluster status
 hydra status
 
@@ -57,13 +83,29 @@ hydra stop
 
 ## Configuration
 
-Edit `configs/cluster.yaml` to match your hardware:
+Edit `configs/cluster.yaml`:
 
 ```yaml
+# Speculative decoding proxy
+proxy:
+  host: 0.0.0.0
+  port: 8088
+  max_draft_tokens: 8
+  fallback_on_draft_failure: true
+  draft:
+    url: http://192.168.1.101:11434   # Ollama on a cheap GPU
+    model_name: qwen3:8b
+    backend: ollama                     # or "llamacpp"
+  target:
+    url: http://192.168.1.100:11434    # Bigger GPU or cloud API
+    model_name: qwen3:32b
+    backend: ollama
+
+# RPC cluster (optional, for tensor-parallel across machines)
 coordinator:
   host: 0.0.0.0
   port: 8080
-  backend: hip       # hip or cuda
+  backend: hip
   gpus:
     - name: "7900 XTX #0"
       vram_gb: 24
@@ -76,9 +118,6 @@ workers:
       - name: "RTX 4070 Ti Super"
         vram_gb: 16
         rpc_port: 50052
-      - name: "RTX 3060"
-        vram_gb: 12
-        rpc_port: 50053
 
 models:
   qwen3-72b:
@@ -88,40 +127,71 @@ models:
     default: true
 ```
 
-Hydra auto-calculates tensor split from VRAM sizes. For the above config: `[0.32, 0.32, 0.21, 0.16]`.
+### Server Backends
+
+The proxy supports two backend types for draft and target servers:
+
+| Backend | Endpoint | Best for |
+|---------|----------|----------|
+| `ollama` | `/api/generate` (raw mode) | Quick setup, any Ollama instance |
+| `llamacpp` | `/v1/completions` (with logprobs) | Best performance, full logprobs support |
+
+## How Speculative Decoding Works
+
+1. **Draft:** The small model generates N candidate tokens (fast, ~100+ tok/s)
+2. **Verify:** The large model evaluates all N tokens in a single forward pass
+3. **Accept/reject:** Keep tokens where both models agree, take the large model's token at the first disagreement
+4. **Repeat** until done
+
+The output is **provably identical** to running the large model alone — the small model just proposes shortcuts. Same-family model pairs (Qwen3-8B → Qwen3-72B) achieve 60-80% acceptance rates, meaning ~5-7 tokens per verification round instead of 1.
+
+### Use Cases
+
+- **Local multi-GPU:** Draft on a consumer GPU ($200), verify on a larger GPU/rig
+- **Cloud cost reduction:** Draft locally, verify via cloud API — fewer API calls for the same output quality
+- **Edge + datacenter:** Fast local responses with datacenter-grade accuracy
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `hydra status` | Show coordinator + worker status, VRAM, tensor split |
-| `hydra start [-m MODEL]` | Start coordinator with health-checked workers |
-| `hydra stop` | Stop the coordinator (workers keep running) |
-| `hydra swap MODEL` | Hot-swap model (restart coordinator, workers persist) |
-| `hydra benchmark` | Run pp/tg benchmark against running coordinator |
+| `hydra proxy start` | Start speculative decoding proxy |
+| `hydra proxy stop` | Stop the proxy |
+| `hydra proxy status` | Show draft/target health + acceptance rate stats |
+| `hydra status` | Show RPC cluster status |
+| `hydra start [-m MODEL]` | Start RPC coordinator |
+| `hydra stop` | Stop the coordinator |
+| `hydra swap MODEL` | Hot-swap model (workers persist) |
+| `hydra benchmark` | Benchmark the running coordinator |
 
 Global option: `-c /path/to/cluster.yaml` or `HYDRA_CONFIG` env var.
+
+## API Endpoints (Proxy)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/completions` | POST | Text completion (OpenAI-compatible) |
+| `/v1/chat/completions` | POST | Chat completion (OpenAI-compatible) |
+| `/v1/models` | GET | List available models |
+| `/v1/hydra/status` | GET | Proxy stats: acceptance rate, rounds, throughput |
+
+All endpoints support `stream: true` for SSE streaming.
 
 ## Hardware Setup
 
 ### Worker (CUDA — Windows)
 
 ```bash
-# Build llama.cpp with CUDA + RPC
 cmake -B build -DGGML_CUDA=ON -DGGML_RPC=ON
 cmake --build build --config Release
-
-# Start one rpc-server per GPU
 build/bin/rpc-server.exe -p 50052  # GPU 0
-build/bin/rpc-server.exe -p 50053  # GPU 1
 ```
 
-Or use the bootstrap script: `scripts/install-worker.sh`
+Or use `scripts/install-worker.sh`
 
 ### Coordinator (ROCm — Ubuntu)
 
 ```bash
-# Build llama.cpp with HIP + RPC
 cmake -B build -DGGML_HIP=ON -DGGML_RPC=ON -DAMDGPU_TARGETS=gfx1100
 cmake --build build --config Release -j$(nproc)
 sudo cp build/bin/llama-server /usr/local/bin/
@@ -129,28 +199,28 @@ sudo cp build/bin/llama-server /usr/local/bin/
 
 Or use `scripts/install-coordinator.sh`
 
-## How It Works
-
-1. **Workers** run `rpc-server`, which exposes GPU compute over TCP. Each `rpc-server` instance binds to one GPU.
-2. **Coordinator** runs `llama-server` with `--rpc <worker-addresses>`. It loads the model and distributes layers across local and remote GPUs based on `--tensor-split`.
-3. **Hydra CLI** manages the lifecycle: checks worker health before starting, calculates split ratios, tracks the coordinator PID, and supports model hot-swapping.
-
-The RPC backend serializes GGML tensor operations over the network. This works across vendors because the coordinator doesn't need to know whether a remote GPU is CUDA or ROCm — the `rpc-server` handles its own backend.
-
-## Expected Performance
-
-| Config | Model | tok/s (est.) |
-|--------|-------|-------------|
-| 2x XTX local only | Qwen3 72B Q4 | ~13 |
-| 4 GPUs via RPC (GbE) | Qwen3 72B Q4 | ~10-15 |
-| 4 GPUs via RPC (2.5GbE) | Qwen3 72B Q4 | ~12-16 |
-| 4 GPUs via RPC | 120B+ Q4 | ~5-8 |
-
-Network bandwidth is the bottleneck. 2.5GbE USB-C adapters (~$25) significantly reduce this.
-
 ## Development
 
 ```bash
 pip install -e ".[dev]"
 pytest tests/ -v
+```
+
+## Project Structure
+
+```
+hydra/
+├── config.py        # YAML config loader (cluster + proxy)
+├── cli.py           # Click CLI (cluster + proxy commands)
+├── coordinator.py   # llama-server lifecycle management
+├── worker.py        # RPC worker health checks
+├── proxy.py         # Speculative decoding proxy server
+└── speculation.py   # Verification algorithm (pure logic)
+tests/
+├── test_config.py
+├── test_coordinator.py
+├── test_speculation.py
+└── test_proxy.py
+configs/
+└── cluster.yaml     # Hardware topology + proxy config
 ```

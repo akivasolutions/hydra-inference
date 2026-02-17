@@ -11,6 +11,7 @@ from rich.table import Table
 
 from . import coordinator, worker
 from .config import load_config
+from . import proxy as proxy_mod
 
 console = Console()
 
@@ -192,3 +193,105 @@ def benchmark(ctx):
     table.add_row("Prompt processing", f"~{pp_speed:.0f} tok/s")
     table.add_row("Generation", f"~{tg_speed:.1f} tok/s")
     console.print(table)
+
+
+# --- Proxy subcommand group ---
+
+
+@cli.group()
+def proxy():
+    """Speculative decoding proxy commands."""
+    pass
+
+
+@proxy.command("start")
+@click.pass_context
+def proxy_start(ctx):
+    """Start the speculative decoding proxy server."""
+    config = _load(ctx)
+    if config.proxy is None:
+        console.print("[red]No proxy section in config. Add it to cluster.yaml.[/red]")
+        sys.exit(1)
+
+    existing_pid = proxy_mod.read_pidfile()
+    if existing_pid is not None:
+        try:
+            import os
+            os.kill(existing_pid, 0)
+            console.print(
+                f"[yellow]Proxy already running (PID {existing_pid}). "
+                f"Stop it first with: hydra proxy stop[/yellow]"
+            )
+            sys.exit(1)
+        except ProcessLookupError:
+            proxy_mod.remove_pidfile()
+
+    pc = config.proxy
+    console.print(f"[bold]Starting speculative decoding proxy...[/bold]")
+    console.print(f"  Draft:  {pc.draft.model_name} @ {pc.draft.url}")
+    console.print(f"  Target: {pc.target.model_name} @ {pc.target.url}")
+    console.print(f"  Max draft tokens: {pc.max_draft_tokens}")
+    console.print(f"  Listening on: {pc.host}:{pc.port}")
+
+    import uvicorn
+    app = proxy_mod.create_app(pc)
+    proxy_mod.write_pidfile()
+    try:
+        uvicorn.run(app, host=pc.host, port=pc.port, log_level="info")
+    finally:
+        proxy_mod.remove_pidfile()
+
+
+@proxy.command("stop")
+def proxy_stop():
+    """Stop the speculative decoding proxy."""
+    if proxy_mod.stop_proxy():
+        console.print("[green]Proxy stopped.[/green]")
+    else:
+        console.print("[yellow]Proxy was not running.[/yellow]")
+
+
+@proxy.command("status")
+@click.pass_context
+def proxy_status(ctx):
+    """Show proxy health and acceptance rate stats."""
+    config = _load(ctx)
+    if config.proxy is None:
+        console.print("[red]No proxy section in config.[/red]")
+        sys.exit(1)
+
+    import httpx
+
+    pc = config.proxy
+    url = f"http://127.0.0.1:{pc.port}/v1/hydra/status"
+
+    try:
+        resp = httpx.get(url, timeout=5.0)
+        data = resp.json()
+    except Exception:
+        console.print("[dim]○ Proxy not running[/dim]")
+        return
+
+    # Draft/target health
+    for role in ("draft", "target"):
+        info = data[role]
+        alive = info["health"].get("alive", False)
+        icon = "[green]●[/green]" if alive else "[red]●[/red]"
+        console.print(f"  {icon} {role.title()}: {info['model']} @ {info['url']}")
+
+    # Stats
+    stats = data.get("stats", {})
+    if stats.get("total_rounds", 0) > 0:
+        console.print()
+        table = Table(title="Speculation Stats")
+        table.add_column("Metric")
+        table.add_column("Value")
+        table.add_row("Rounds", str(stats["total_rounds"]))
+        table.add_row("Drafted", str(stats["total_drafted"]))
+        table.add_row("Accepted", str(stats["total_accepted"]))
+        table.add_row("Acceptance rate", f"{stats['acceptance_rate']:.1%}")
+        table.add_row("Tokens/round", f"{stats['effective_tokens_per_round']:.1f}")
+        table.add_row("Uptime", f"{stats['uptime_seconds']:.0f}s")
+        console.print(table)
+    else:
+        console.print("\n[dim]No speculation rounds yet.[/dim]")

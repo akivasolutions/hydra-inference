@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from hydra.config import ClusterConfig, load_config
+from hydra.config import ClusterConfig, ProxyConfig, load_config
 
 
 @pytest.fixture
@@ -84,3 +84,51 @@ def test_default_model(config_file):
     assert model is not None
     assert model.name == "test-model"
     assert model.default is True
+
+
+def test_no_proxy_section(config_file):
+    """Backward compat: configs without proxy section work fine."""
+    config = load_config(config_file)
+    assert config.proxy is None
+
+
+def test_proxy_section_parsed(tmp_path):
+    cfg = {
+        "coordinator": {
+            "host": "0.0.0.0",
+            "port": 8080,
+            "backend": "hip",
+            "gpus": [{"name": "XTX", "vram_gb": 24}],
+        },
+        "models": {
+            "test": {"path": "/test.gguf", "default": True},
+        },
+        "proxy": {
+            "host": "127.0.0.1",
+            "port": 9999,
+            "max_draft_tokens": 4,
+            "fallback_on_draft_failure": False,
+            "draft": {
+                "url": "http://192.168.1.1:8081",
+                "model_name": "small-model",
+            },
+            "target": {
+                "url": "http://192.168.1.2:8080",
+                "model_name": "big-model",
+            },
+        },
+    }
+    p = tmp_path / "cluster.yaml"
+    p.write_text(yaml.dump(cfg))
+    config = load_config(p)
+
+    assert config.proxy is not None
+    assert isinstance(config.proxy, ProxyConfig)
+    assert config.proxy.host == "127.0.0.1"
+    assert config.proxy.port == 9999
+    assert config.proxy.max_draft_tokens == 4
+    assert config.proxy.fallback_on_draft_failure is False
+    assert config.proxy.draft.url == "http://192.168.1.1:8081"
+    assert config.proxy.draft.model_name == "small-model"
+    assert config.proxy.target.url == "http://192.168.1.2:8080"
+    assert config.proxy.target.model_name == "big-model"

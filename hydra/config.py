@@ -40,6 +40,23 @@ class ModelConfig:
 
 
 @dataclass
+class ServerEndpoint:
+    url: str  # e.g. "http://192.168.1.100:8081"
+    model_name: str  # display only
+    backend: str = "llamacpp"  # "llamacpp" or "ollama"
+
+
+@dataclass
+class ProxyConfig:
+    draft: ServerEndpoint
+    target: ServerEndpoint
+    host: str = "0.0.0.0"
+    port: int = 8088
+    max_draft_tokens: int = 8
+    fallback_on_draft_failure: bool = True
+
+
+@dataclass
 class ClusterConfig:
     coordinator_host: str
     coordinator_port: int
@@ -49,6 +66,7 @@ class ClusterConfig:
     models: dict[str, ModelConfig]
     coordinator_binary: str
     rpc_server_binary: str
+    proxy: ProxyConfig | None = None
 
     @property
     def all_gpus(self) -> list[GPU]:
@@ -118,6 +136,20 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
 
     binaries = raw.get("binaries", {})
 
+    proxy = None
+    if "proxy" in raw:
+        p = raw["proxy"]
+        draft = p["draft"]
+        target = p["target"]
+        proxy = ProxyConfig(
+            draft=ServerEndpoint(url=draft["url"], model_name=draft["model_name"], backend=draft.get("backend", "llamacpp")),
+            target=ServerEndpoint(url=target["url"], model_name=target["model_name"], backend=target.get("backend", "llamacpp")),
+            host=p.get("host", "0.0.0.0"),
+            port=p.get("port", 8088),
+            max_draft_tokens=p.get("max_draft_tokens", 8),
+            fallback_on_draft_failure=p.get("fallback_on_draft_failure", True),
+        )
+
     return ClusterConfig(
         coordinator_host=coord.get("host", "0.0.0.0"),
         coordinator_port=coord.get("port", 8080),
@@ -127,4 +159,5 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         models=models,
         coordinator_binary=binaries.get("coordinator", "llama-server"),
         rpc_server_binary=binaries.get("rpc_server", "rpc-server"),
+        proxy=proxy,
     )

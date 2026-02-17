@@ -41,6 +41,21 @@ models:
     predict: 4096
     flash_attn: true
 
+# Speculative decoding proxy — draft model proposes, target verifies
+proxy:
+  host: 0.0.0.0
+  port: 8088
+  max_draft_tokens: 8
+  fallback_on_draft_failure: true
+  draft:
+    url: http://192.168.1.101:11434
+    model_name: qwen3:8b
+    backend: ollama
+  target:
+    url: http://192.168.1.100:11434
+    model_name: qwen3:32b
+    backend: ollama
+
 # llama-server binary paths (per-platform)
 binaries:
   coordinator: /usr/local/bin/llama-server  # ROCm build
