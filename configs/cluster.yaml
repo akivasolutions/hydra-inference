@@ -1,0 +1,47 @@
+# Hydra cluster topology
+# Edit this to match your hardware
+
+coordinator:
+  host: 0.0.0.0  # ROCm machine serves the API
+  port: 8080
+  backend: hip  # hip or cuda
+  gpus:
+    - name: "7900 XTX #0"
+      vram_gb: 24
+    - name: "7900 XTX #1"
+      vram_gb: 24
+
+workers:
+  - host: 192.168.1.100  # Windows desktop
+    gpus:
+      - name: "RTX 4070 Ti Super"
+        vram_gb: 16
+        rpc_port: 50052
+      - name: "RTX 3060"
+        vram_gb: 12
+        rpc_port: 50053
+
+models:
+  qwen3-72b:
+    path: /models/Qwen3-72B-Q4_K_M.gguf
+    ctx_size: 8192
+    predict: 4096
+    flash_attn: true
+    default: true
+
+  deepseek-r1-70b:
+    path: /models/DeepSeek-R1-Distill-Qwen-70B-Q4_K_M.gguf
+    ctx_size: 8192
+    predict: 4096
+    flash_attn: true
+
+  llama3.3-70b:
+    path: /models/Llama-3.3-70B-Instruct-Q4_K_M.gguf
+    ctx_size: 8192
+    predict: 4096
+    flash_attn: true
+
+# llama-server binary paths (per-platform)
+binaries:
+  coordinator: /usr/local/bin/llama-server  # ROCm build
+  rpc_server: rpc-server.exe  # Windows, expected in PATH or full path
