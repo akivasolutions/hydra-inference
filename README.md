@@ -5,23 +5,23 @@ Mixed-vendor GPU inference cluster manager with speculative decoding proxy. Pool
 ## How It Works in 10 Seconds
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│   MACHINE A (cheap)              MACHINE B (powerful)           │
-│   RTX 4060, 8GB                  RTX 4070 Ti Super, 16GB        │
-│   Qwen3-8B via Ollama            Qwen3-32B via Ollama           │
-│                                                                  │
-│   "Draft 8 tokens fast"    ───►  "Verify all 8 in one pass"     │
-│   ~100 tok/s                     single forward pass            │
-│                                                                  │
-│   "the answer is 42,       ───►  ✓ yes  ✓ yes  ✓ yes           │
-│    because math works..."        ✓ yes  ✓ yes  ✗ no             │
-│                                  └── take my token here         │
-│                                                                  │
-│   Result: 5 tokens accepted instantly = skipped 5 slow steps    │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+YOUR HARDWARE (any mix works)                         TIGHTWAD
+                                                          │
+  RTX 4070 Ti Super (16GB, NVIDIA) ──────────┐           │
+  RTX 3060 (12GB, NVIDIA) ───────────────────┤           │
+  RTX 2070 (8GB, NVIDIA) ────────────────────┤  cluster  │   ┌──────────────┐
+  GTX 770 (2GB — yes, really) ───────────────┤──────────►│──►│ OpenAI API   │
+  RX 7900 XTX (24GB, AMD!) ─────────────────┤  yaml     │   │ localhost:8088│
+  Old Xeon workstation (CPU only) ───────────┤           │   └──────────────┘
+  Your laptop (M2, CPU draft) ───────────────┘           │
+                                                          │
+  CUDA ✓   ROCm ✓   CPU ✓   Mixed ✓            One endpoint.
+```
 
+> It's not 2 matching GPUs. It's your entire junk drawer of compute unified into one API.
+> That dusty 770 in your closet? Put it to work.
+
+```
   Without Tightwad: big model generates every token, one at a time
   With Tightwad:    big model only works on the tokens it disagrees with
   Output quality:   IDENTICAL (mathematically guaranteed)
@@ -39,10 +39,11 @@ Mixed-vendor GPU inference cluster manager with speculative decoding proxy. Pool
 | | Before | After |
 |---|---|---|
 | **Your chat app** | Open WebUI, ChatBot UI, etc. | Same app, no changes |
-| **Points at** | `http://your-server:11434` (Ollama) | `http://your-server:8088` (Tightwad) |
+| **Points at** | `http://192.168.1.10:11434` (Ollama on one machine) | `http://192.168.1.10:8088` (Tightwad proxy) |
 | **Model you talk to** | Qwen3-72B | Qwen3-72B (same model, same output) |
 | **What you see** | Normal chat responses | Normal chat responses, just faster |
-| **The small model** | Doesn't exist | Hidden — you never see it |
+| **The small model** | Doesn't exist | Hidden — drafting on a different machine entirely |
+| **Other machines** | Idle, wasted | RTX 2070, old Xeon, laptop — all contributing |
 
 **That's it.** One URL change. Same UI, same model, same quality. Tightwad handles everything behind the scenes:
 
@@ -135,37 +136,54 @@ tightwad stop
 
 ## Homelab Recipe
 
-One concrete setup you can reproduce in ~20 minutes with two machines.
+A realistic three-machine setup you can reproduce in ~30 minutes. Start with two machines, add more anytime. The cluster grows.
 
 **Hardware:**
-- **Machine A (draft):** Gaming PC with RTX 4060 (8GB VRAM) — the one you use for games
-- **Machine B (target):** Server or second PC with RTX 4070 Ti Super (16GB VRAM)
+- **Machine A (target):** Desktop with RTX 4070 Ti Super + RTX 3060 (28GB VRAM combined) — the workhorse
+- **Machine B (draft):** Old gaming PC with RTX 2070 (8GB VRAM) — that box you almost sold
+- **Machine C (CPU draft):** Server or workstation with no GPU — CPU-only, still contributes
 
-**Expected results:** 58% average token acceptance rate, up to 88% on reasoning tasks
+**Expected results:** 58–64% average token acceptance, up to 88% on reasoning tasks. Machine C adds throughput even without a GPU.
 
 ---
 
-### Step 1 — On Machine A: Start the draft model
+### Step 1 — On Machine B: Start the draft model
 
 ```bash
+# Machine B — RTX 2070 (8GB VRAM)
 ollama run qwen3:8b
-# Confirm it works: ollama ps
+# Confirm it works:
+ollama ps
 # Should show: qwen3:8b running
 ```
 
 Ollama listens on `0.0.0.0:11434` by default. If not, set `OLLAMA_HOST=0.0.0.0` before starting.
 
-### Step 2 — On Machine B: Start the target model
+### Step 2 — On Machine C: Start a CPU draft model
 
 ```bash
+# Machine C — CPU only, no GPU needed
+# llama-server with a tiny model is ideal for CPU drafting
+llama-server -m qwen3-1.7b-q4_k_m.gguf --port 8081 --host 0.0.0.0
+# Or with Ollama:
+OLLAMA_HOST=0.0.0.0 ollama run qwen3:1.7b
+```
+
+Even at 15–30 tok/s on CPU, Machine C reduces load on Machine B and adds redundancy.
+
+### Step 3 — On Machine A: Start the target model
+
+```bash
+# Machine A — RTX 4070 Ti Super + RTX 3060 (28GB combined via llama.cpp RPC)
 ollama run qwen3:32b
-# Confirm: ollama ps
+# Confirm:
+ollama ps
 # Should show: qwen3:32b running
 ```
 
-Same note: make sure Ollama is accessible on the network (`OLLAMA_HOST=0.0.0.0`).
+Same note: ensure Ollama is accessible on the network (`OLLAMA_HOST=0.0.0.0`).
 
-### Step 3 — On whichever machine runs the proxy: Install Tightwad
+### Step 4 — On whichever machine runs the proxy: Install Tightwad
 
 ```bash
 git clone https://github.com/akivasolutions/tightwad.git
@@ -174,37 +192,49 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-### Step 4 — Edit `configs/cluster.yaml`
+### Step 5 — Edit `configs/cluster.yaml`
+
+Start with two machines (A + B), then add C:
 
 ```yaml
 proxy:
   host: 0.0.0.0
   port: 8088
-  max_draft_tokens: 8
+  max_draft_tokens: 32
   fallback_on_draft_failure: true
   draft:
-    url: http://192.168.1.10:11434    # Machine A — replace with your IP
+    url: http://192.168.1.20:11434    # Machine B (RTX 2070) — replace with your IP
     model_name: qwen3:8b
     backend: ollama
   target:
-    url: http://192.168.1.20:11434    # Machine B — replace with your IP
+    url: http://192.168.1.10:11434    # Machine A (4070 Ti + 3060) — replace with your IP
     model_name: qwen3:32b
     backend: ollama
 ```
 
-Replace `192.168.1.10` and `192.168.1.20` with your actual machine IPs (`ip addr` on Linux, `ipconfig` on Windows).
+**Adding Machine C later** (CPU draft as fallback or parallel drafter):
 
-### Step 5 — Start the proxy
+```yaml
+  # Add a second draft source when you're ready:
+  draft_fallback:
+    url: http://192.168.1.30:8081     # Machine C (CPU only) — replace with your IP
+    model_name: qwen3:1.7b
+    backend: llamacpp
+```
+
+Replace all IPs with your actual machine IPs (`ip addr` on Linux, `ipconfig` on Windows).
+
+### Step 6 — Start the proxy
 
 ```bash
 tightwad proxy start
 # Expected output:
-# ✓ Draft model healthy  (qwen3:8b @ 192.168.1.10:11434)
-# ✓ Target model healthy (qwen3:32b @ 192.168.1.20:11434)
+# ✓ Draft model healthy  (qwen3:8b @ 192.168.1.20:11434)   — Machine B
+# ✓ Target model healthy (qwen3:32b @ 192.168.1.10:11434)  — Machine A
 # ✓ Proxy listening on http://localhost:8088
 ```
 
-### Step 6 — Test it
+### Step 7 — Test it
 
 ```bash
 # Basic test
@@ -223,7 +253,7 @@ tightwad proxy status
 curl http://localhost:8088/v1/tightwad/status
 ```
 
-### Step 7 — Point your app at it
+### Step 8 — Point your app at it
 
 Any OpenAI-compatible client works. Just change the base URL:
 
@@ -250,6 +280,8 @@ response = client.chat.completions.create(
 | Factual Q&A | ~52% |
 | Creative writing | ~34% |
 | **Average** | **~58%** |
+
+> **The cluster grows.** Start with Machines A + B. Add Machine C when you're ready. Add a fourth machine (that GTX 770 you haven't thrown out yet) whenever. Each new node contributes without disrupting the existing setup. Tightwad doesn't care what generation or vendor the hardware is from.
 
 > **Note on the bigger picture:** With Qwen3-8B drafting for Qwen3.5-397B (via API), we've seen 80% acceptance after whitespace normalization — meaning 4 in 5 tokens come from your local GPU, not the cloud. Reasoning tasks hit 88%. The bigger the gap between draft and target quality, the more you save.
 
@@ -401,18 +433,24 @@ vLLM is excellent production inference software. It's also CUDA-only. If you hav
 
 vLLM does support speculative decoding, but only within a single machine. Tightwad's proxy does it across your network — your draft model can be on a completely different box than your target.
 
+**Critically: vLLM cannot pool heterogeneous hardware.** You can't mix a GTX 770 with a 4070 Ti in vLLM. You can't combine a CUDA machine with an AMD machine. You can't add a CPU-only node to the cluster. vLLM assumes uniform, high-end CUDA hardware throughout. Tightwad assumes you have a junk drawer.
+
 vLLM is built for ML teams running production workloads at scale. Tightwad is built for anyone with two machines and a network cable.
 
 | | vLLM | Tightwad |
 |--|------|----------|
 | AMD / ROCm support | ✗ | ✓ |
 | Cross-machine speculative decoding | ✗ | ✓ |
+| Mix old + new GPU generations | ✗ | ✓ |
+| CPU nodes in the cluster | ✗ | ✓ |
 | Works with Ollama | ✗ | ✓ |
 | Target audience | Production ML teams | Homelab / anyone |
 
 ### vs Ollama
 
 Ollama is great. It's the reason most people have local models running at all. But Ollama runs one model on one machine. When you outgrow one GPU, Ollama can't help you — it has no concept of pooling or cross-machine inference.
+
+**Ollama cannot combine machines at all.** Your RTX 2070 on the old gaming PC and your RTX 4070 on the main rig are completely isolated from each other in Ollama's world. They'll never cooperate on a single request.
 
 Tightwad is the next step after Ollama. Keep using Ollama as the backend on each machine — Tightwad just coordinates between them.
 
@@ -434,7 +472,9 @@ If you have a single powerful CUDA machine and need production-grade throughput:
 
 If you have one machine and just want to run models: use Ollama.
 
-If you have two or more machines — mixed vendors, mixed budgets, mixed everything — and want them to work together intelligently: that's what Tightwad is for.
+If you have two or more machines — mixed vendors, mixed GPU generations, mixed budgets, some with no GPU at all — and want them to work together intelligently: that's what Tightwad is for.
+
+That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with no GPU? CPU drafting. Your gaming PC, your workstation, your NAS, your laptop — Tightwad doesn't judge what you have. It just pools it.
 
 ## CLI Reference
 
