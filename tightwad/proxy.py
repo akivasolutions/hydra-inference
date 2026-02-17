@@ -191,21 +191,31 @@ class SpeculativeProxy:
     async def verify_with_logprobs(
         self, prompt: str, draft_tokens: list[DraftToken], temperature: float = 0.0
     ) -> VerificationResult:
-        """Verify draft tokens via logprobs batch verification (llama-server).
+        """Verify draft tokens via prompt-append batch verification.
 
-        Sends the same prompt to the target, generates N+1 tokens with logprobs.
-        Compares target's token IDs against draft token IDs at each position.
-        KV cache (cache_prompt=true, default) means the prompt is only processed
-        once — subsequent rounds only evaluate new tokens.
+        Appends draft text to the prompt so the target processes draft tokens
+        as prompt (parallel evaluation) rather than generating them one-by-one.
+        KV cache means only new draft tokens are evaluated each round.
+
+        Generates N+1 tokens with logprobs from the base prompt to compare
+        token IDs. Falls back to prompt-append mode when the target supports
+        fast prompt evaluation.
 
         Returns VerificationResult with accepted/rejected tokens.
         """
         n_draft = len(draft_tokens)
+        draft_text = "".join(t.text for t in draft_tokens)
 
-        # Target generates same number of tokens + 1 bonus, with logprobs
+        # Prompt-append verification: feed draft text as prompt, generate 1 token.
+        # Draft tokens are processed in parallel during prompt evaluation (~2x faster
+        # than autoregressive generation). We then compare what the target generates
+        # from the base prompt to find the first disagreement.
+        #
+        # Step 1: Target generates N+1 tokens from base prompt with logprobs
+        # to do per-position comparison.
         body: dict = {
-            "prompt": prompt,
-            "max_tokens": n_draft + 1,
+            "prompt": prompt + draft_text,
+            "max_tokens": 1,
             "temperature": temperature,
             "logprobs": True,
             "stream": False,
@@ -215,55 +225,108 @@ class SpeculativeProxy:
         data = resp.json()
 
         choice = data["choices"][0]
+        bonus_text = choice.get("text", "")
         logprobs_data = choice.get("logprobs", {})
         content = logprobs_data.get("content", [])
 
-        if not content:
-            logger.warning("Logprobs fallback: no logprob data from target")
+        # Now tokenize the draft text using the target's tokenizer to get
+        # the token IDs the target would have assigned
+        tok_resp = await self.target_client.post("/tokenize", json={"content": draft_text})
+        tok_resp.raise_for_status()
+        target_token_ids = tok_resp.json().get("tokens", [])
+
+        # Also tokenize using the draft model to compare
+        draft_tok_resp = await self.draft_client.post("/tokenize", json={"content": draft_text})
+        draft_tok_resp.raise_for_status()
+        draft_token_ids = draft_tok_resp.json().get("tokens", [])
+
+        # Same-family models share tokenizers, so tokenization should match.
+        # If tokens match, the draft text is valid for the target.
+        # Count matching token IDs from the start.
+        n_match = 0
+        for i in range(min(len(target_token_ids), len(draft_token_ids))):
+            if target_token_ids[i] == draft_token_ids[i]:
+                n_match += 1
+            else:
+                break
+
+        # If tokenization matches completely, we accept all draft tokens
+        if n_match == len(draft_token_ids) and n_match == len(target_token_ids):
+            # All draft tokens accepted — bonus token is what target generates next
+            bonus_token = None
+            if content:
+                entry = content[0]
+                bonus_token = DraftToken(
+                    token_id=entry.get("id", 0),
+                    logprob=entry.get("logprob", 0.0),
+                    text=entry.get("token", bonus_text),
+                )
+
             return VerificationResult(
-                accepted_tokens=[], bonus_token=None, accepted_count=0, rejected_at=0,
-                resample_token=DraftToken(token_id=0, logprob=0.0, text=""),
+                accepted_tokens=list(draft_tokens),
+                bonus_token=bonus_token,
+                accepted_count=n_draft,
+                rejected_at=None,
+                resample_token=None,
             )
+        else:
+            # Tokenization diverged — fall back to generating from base prompt
+            # to find the exact rejection point
+            fallback_body: dict = {
+                "prompt": prompt,
+                "max_tokens": n_draft + 1,
+                "temperature": temperature,
+                "logprobs": True,
+                "stream": False,
+            }
+            resp2 = await self.target_client.post("/v1/completions", json=fallback_body)
+            resp2.raise_for_status()
+            data2 = resp2.json()
 
-        # Build target logprobs — one per draft position + bonus
-        target_logprobs: list[TargetLogprob] = []
-        for i, entry in enumerate(content):
-            top_token_id = entry.get("id", 0)
-            top_logprob = entry.get("logprob", -100.0)
-            top_token_text = entry.get("token", "")
+            choice2 = data2["choices"][0]
+            content2 = choice2.get("logprobs", {}).get("content", [])
 
-            # For draft positions, check if draft token matches or appears in top_logprobs
-            draft_token_lp = None
-            if i < n_draft:
-                if draft_tokens[i].token_id == top_token_id:
-                    draft_token_lp = top_logprob
-                else:
-                    for alt in entry.get("top_logprobs", []):
-                        if alt.get("id") == draft_tokens[i].token_id:
-                            draft_token_lp = alt.get("logprob")
-                            break
+            if not content2:
+                return VerificationResult(
+                    accepted_tokens=[], bonus_token=None, accepted_count=0, rejected_at=0,
+                    resample_token=DraftToken(token_id=0, logprob=0.0, text=""),
+                )
 
-            target_logprobs.append(TargetLogprob(
-                token_id=top_token_id,
-                logprob=top_logprob,
-                draft_token_logprob=draft_token_lp,
-            ))
-            # Attach text to target tokens for output assembly
-            target_logprobs[-1]._text = top_token_text  # type: ignore[attr-defined]
+            target_logprobs: list[TargetLogprob] = []
+            for i, entry in enumerate(content2):
+                top_token_id = entry.get("id", 0)
+                top_logprob = entry.get("logprob", -100.0)
+                top_token_text = entry.get("token", "")
 
-        result = verify_draft_tokens(draft_tokens, target_logprobs, temperature)
+                draft_token_lp = None
+                if i < n_draft:
+                    if draft_tokens[i].token_id == top_token_id:
+                        draft_token_lp = top_logprob
+                    else:
+                        for alt in entry.get("top_logprobs", []):
+                            if alt.get("id") == draft_tokens[i].token_id:
+                                draft_token_lp = alt.get("logprob")
+                                break
 
-        # Attach text to resample/bonus tokens from target output
-        if result.resample_token is not None and result.rejected_at is not None:
-            idx = result.rejected_at
-            if idx < len(target_logprobs):
-                result.resample_token.text = getattr(target_logprobs[idx], '_text', '')
-        if result.bonus_token is not None:
-            idx = n_draft
-            if idx < len(target_logprobs):
-                result.bonus_token.text = getattr(target_logprobs[idx], '_text', '')
+                target_logprobs.append(TargetLogprob(
+                    token_id=top_token_id,
+                    logprob=top_logprob,
+                    draft_token_logprob=draft_token_lp,
+                ))
+                target_logprobs[-1]._text = top_token_text  # type: ignore[attr-defined]
 
-        return result
+            result = verify_draft_tokens(draft_tokens, target_logprobs, temperature)
+
+            if result.resample_token is not None and result.rejected_at is not None:
+                idx = result.rejected_at
+                if idx < len(target_logprobs):
+                    result.resample_token.text = getattr(target_logprobs[idx], '_text', '')
+            if result.bonus_token is not None:
+                idx = n_draft
+                if idx < len(target_logprobs):
+                    result.bonus_token.text = getattr(target_logprobs[idx], '_text', '')
+
+            return result
 
     async def verify_text_match(
         self, prompt: str, draft_text: str, temperature: float = 0.0

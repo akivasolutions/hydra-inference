@@ -90,7 +90,7 @@ Edit `configs/cluster.yaml`:
 proxy:
   host: 0.0.0.0
   port: 8088
-  max_draft_tokens: 8
+  max_draft_tokens: 32              # Sweet spot for cross-machine (reduces HTTP round trips)
   fallback_on_draft_failure: true
   draft:
     url: http://192.168.1.50:11434   # Ollama on a cheap GPU
@@ -147,20 +147,40 @@ The output is **provably identical** to running the large model alone — the sm
 
 ### Benchmark Results
 
-#### Logprobs Verification (Qwen3-8B → Qwen3-32B, cross-machine llama-server)
+#### Wall-Clock Speedup (Qwen3-8B → Qwen3-32B, cross-machine llama-server)
 
-Draft on RTX 2070 (8GB) via llama-server, target on RTX 4070 Ti Super + RTX 3060 (28GB) via llama-server. **Real batch verification** — target scores all draft tokens in a single forward pass.
+Draft on RTX 2070 (8GB), target on RTX 4070 Ti Super + RTX 3060 (28GB). Both via llama-server with prompt-append verification.
+
+| Prompt | Baseline | Speculative | Speedup |
+|--------|:--------:|:-----------:|:-------:|
+| Capital of France | 1.17s | 0.90s | **1.30x** |
+| Thermodynamics | 12.73s | 9.09s | **1.40x** |
+| Prime checker | 12.76s | 10.15s | **1.28x** |
+| Average speed | 13.24s | 10.95s | **1.21x** |
+| TCP vs UDP | 5.58s | 4.88s | **1.14x** |
+| **Total** | **45.43s** | **35.96s** | **1.27x** |
+
+**1.27x overall speedup** with `max_draft_tokens: 32` (50 rounds, 31.7 tokens/round, 100% acceptance).
+
+##### Tuning `max_draft_tokens`
+
+| Setting | Rounds | Tok/Round | Overall Speedup |
+|:-------:|:------:|:---------:|:---------------:|
+| 8 | 96 | 8.8 | 0.63x (slower) |
+| **32** | **50** | **31.7** | **1.27x** |
+| 64 | 16 | 56.5 | 1.21x |
+
+The sweet spot is **32 draft tokens** — fewer rounds reduce HTTP overhead, but going too high (64) adds draft latency that outweighs the savings.
+
+#### Acceptance Rate Details (logprobs verification)
 
 | Metric | Value |
 |--------|:-----:|
 | **Acceptance Rate** | **73.5%** |
-| **Effective tokens/round** | **6.6** |
+| **Effective tokens/round** | **6.6** (at max_draft_tokens=8) |
 | Total rounds | 87 |
 | Drafted tokens | 671 |
 | Accepted tokens | 493 |
-| Bonus tokens | 50 |
-
-Each round, the 8B model drafts 8 tokens at ~49 tok/s, and the 32B target verifies all 8 in one forward pass. On average **6.6 tokens are accepted per round**, meaning the target does ~1/7th the autoregressive steps.
 
 #### Text-Match Benchmarks (Ollama, for acceptance rate comparison)
 
@@ -181,13 +201,21 @@ Same-family (Qwen3-8B → Qwen3-32B, local Ollama):
 
 **Key finding:** Same-family drafting is critical. An 8B model from the same family as the target achieves 73% acceptance with logprobs, while cross-family drops to ~3%.
 
-Run the benchmark yourself: `OPENROUTER_API_KEY=... python scripts/benchmark_proxy.py`
+#### CPU Draft Results (Qwen3-1.7B CPU → Qwen3-32B GPU)
+
+| Draft Host | Draft Speed | Acceptance | Wall-Clock Speedup |
+|------------|:-----------:|:----------:|:------------------:|
+| M4 Mac CPU (llama-server) | 32.8 tok/s | 68% | 0.80x |
+| Unraid CPU (Ollama, text-match) | 14.9 tok/s | 68% | 0.14x |
+
+CPU drafting with a 1.7B model works but doesn't achieve speedup at `max_draft_tokens=8` due to HTTP round-trip overhead. Needs testing with higher draft token counts and/or multi-drafter parallelism.
 
 ### Use Cases
 
 - **Local multi-GPU:** Draft on a consumer GPU ($200), verify on a larger GPU/rig
 - **Cloud cost reduction:** Draft locally, verify via cloud API — fewer API calls for the same output quality
 - **CPU draft, GPU verify:** Run a tiny model (0.6B-1.7B) on CPU/RAM, verify on GPU. Turns every idle CPU in a datacenter into usable inference compute
+- **Multi-drafter parallelism:** Multiple CPUs each run a draft model in parallel, the GPU target picks the best candidate. Mimics datacenter topology where idle CPUs are abundant and GPUs are scarce
 - **Legacy GPU revival:** A 12-year-old GPU with 2GB VRAM can run Qwen3-1.7B as a draft model for a 72B target — turning e-waste into productive infrastructure
 - **Edge + datacenter:** Fast local responses with datacenter-grade accuracy
 

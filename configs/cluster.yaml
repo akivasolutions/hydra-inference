@@ -45,7 +45,7 @@ models:
 proxy:
   host: 0.0.0.0
   port: 8088
-  max_draft_tokens: 8
+  max_draft_tokens: 32
   fallback_on_draft_failure: true
   draft:
     url: http://192.168.1.101:8081
