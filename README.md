@@ -24,8 +24,8 @@ YOUR HARDWARE (any mix works)                         TIGHTWAD
 ```
   Without Tightwad: big model generates every token, one at a time
   With Tightwad:    big model only works on the tokens it disagrees with
-  Output quality:   IDENTICAL (mathematically guaranteed)
-  Speed:            2-3x faster
+  Output quality:   IDENTICAL (with greedy decoding)
+  Speed:            Up to 2-3x faster
 ```
 
 > The small model is fast but sometimes wrong. The big model is slow but always right.
@@ -63,7 +63,7 @@ Combine GPUs from different machines and vendors into a single OpenAI-compatible
 
 ### 2. Speculative Decoding Proxy — Draft + Verify across machines
 
-A fast small model (e.g., 8B on a consumer GPU) drafts candidate tokens, a large model (e.g., 72B on a server or cloud API) verifies them in batch. Output quality is **identical to running the large model alone**, but 2-3x faster because batch verification is much cheaper than autoregressive generation.
+A fast small model (e.g., 8B on a consumer GPU) drafts candidate tokens, a large model (e.g., 72B on a server or cloud API) verifies them in batch. Output quality is **equivalent to running the large model alone**, but up to 2-3x faster because batch verification is much cheaper than autoregressive generation.
 
 ```
 Client (OpenAI API)
@@ -347,7 +347,7 @@ The proxy supports two backend types for draft and target servers:
 3. **Accept/reject:** Keep tokens where both models agree, take the large model's token at the first disagreement
 4. **Repeat** until done
 
-The output is **provably identical** to running the large model alone — the small model just proposes shortcuts.
+The output is **equivalent** to running the large model alone — the small model just proposes shortcuts.
 
 ### Benchmark Results
 
@@ -429,7 +429,7 @@ You've probably heard of the other tools. Here's how Tightwad fits in.
 
 ### vs vLLM
 
-vLLM is excellent production inference software. It's also CUDA-only. If you have an AMD GPU, you can't use it — full stop. Tightwad pools CUDA and ROCm GPUs on the same model, same endpoint.
+vLLM is excellent production inference software. It's also primarily CUDA-focused, ROCm support is experimental. If you have an AMD GPU, getting it working takes extra effort. Tightwad pools CUDA and ROCm GPUs on the same model, same endpoint.
 
 vLLM does support speculative decoding, but only within a single machine. Tightwad's proxy does it across your network — your draft model can be on a completely different box than your target.
 
@@ -439,7 +439,7 @@ vLLM is built for ML teams running production workloads at scale. Tightwad is bu
 
 | | vLLM | Tightwad |
 |--|------|----------|
-| AMD / ROCm support | ✗ | ✓ |
+| AMD / ROCm support | Experimental | ✓ |
 | Cross-machine speculative decoding | ✗ | ✓ |
 | Mix old + new GPU generations | ✗ | ✓ |
 | CPU nodes in the cluster | ✗ | ✓ |
@@ -462,7 +462,7 @@ The key difference for speculative decoding: llama.cpp RPC ships 100–300 MB of
 
 ### vs TGI (HuggingFace Text Generation Inference)
 
-TGI is part of HuggingFace's inference ecosystem and is designed to integrate with their paid services. It's an excellent tool if you're already in that ecosystem.
+TGI is optimized for the HuggingFace ecosystem and integrates well with their services. It's an excellent tool if you're already in that ecosystem.
 
 Tightwad is MIT licensed, has no vendor affiliation, and works with your existing Ollama or llama.cpp setup without any additional accounts or services. It's backend-agnostic by design.
 
