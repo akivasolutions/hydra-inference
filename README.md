@@ -447,7 +447,7 @@ CPU drafting with a 1.7B model works but doesn't achieve speedup at `max_draft_t
 
 **The killer feature.** When a model is too large for any single machine, pool GPUs via RPC and use speculative decoding to overcome RPC's per-token latency. The draft model runs on any junk hardware (CPU, 2GB GPU) and the pooled target verifies 32 tokens per batch instead of generating one at a time.
 
-Setup: Qwen3-1.7B (M4 CPU, llamacpp draft) → Qwen3-32B (4-GPU RPC pool: 4070+3060+2070+M2)
+**Qwen3-32B (4-GPU pool, Qwen3-1.7B draft on M4 CPU):**
 
 | Mode | Speed | Notes |
 |------|:-----:|-------|
@@ -455,18 +455,30 @@ Setup: Qwen3-1.7B (M4 CPU, llamacpp draft) → Qwen3-32B (4-GPU RPC pool: 4070+3
 | **RPC pool + speculation** | **5.4 tok/s** | 32 tokens verified per batch, 100% acceptance |
 | **Speedup** | **1.8x** | |
 
+**Llama 3.3 70B (4-GPU pool, Llama 3.1 8B draft on M4 Metal):**
+
+| Mode | Tokens | Time | Speed |
+|------|:------:|:----:|:-----:|
+| RPC pool direct (autoregressive) | 512 | 231s | 2.2 tok/s |
+| **RPC pool + speculation** | **519** | **127s** | **4.1 tok/s** |
+| **Speedup** | | | **1.86x** |
+
+100% acceptance rate, 33 tokens/round. The 70B model doesn't fit on any single machine — it's distributed across 4 GPUs (4070 Ti Super + 3060 + 2070 + M2 Metal = 52GB VRAM) over WiFi. Without speculation: painfully slow. With speculation: usable.
+
+> **Critical lesson: draft and target MUST be the same model family.** Llama 3.2 3B → Llama 3.3 70B got 1.6% acceptance (10x slower than no speculation) despite sharing a tokenizer. Llama 3.1 8B → Llama 3.3 70B gets 100% acceptance because they share the same architecture. Always verify family match.
+
 ```
 Why this works:
 
   Pool autoregressive: 1 token → full RPC round-trip → 1 token → full RPC round-trip → ...
-                       3.0 tok/s (network latency per token)
+                       2-3 tok/s (network latency per token)
 
-  Pool + speculation:  Draft 32 tokens (CPU, fast, no network)
+  Pool + speculation:  Draft 32 tokens (local GPU, fast, no network)
                        → Verify 32 tokens in ONE batch (one RPC round-trip for 32 tokens)
-                       → 5.4 tok/s (network latency amortized over 32 tokens)
+                       → 4-5 tok/s (network latency amortized over 32 tokens)
 ```
 
-**This means any model that fits across your pooled GPUs is usable — even over WiFi.** The draft model can run on literally anything: a P400 (2GB), a GTX 770 (2GB), a laptop CPU, a Raspberry Pi. It just needs to run a 1.7B model from the same family as the target.
+**This means any model that fits across your pooled GPUs is usable — even over WiFi.** The draft model just needs to be from the same model family as the target and small enough to run on your local hardware.
 
 #### RPC Pool Without Speculation (for comparison)
 
@@ -476,7 +488,9 @@ Don't do this over WiFi. RPC tensor-parallelism ships 100-300 MB per inference s
 |-------|:-----:|
 | Desktop local only (4070+3060, 32B) | 17.0 tok/s |
 | 4-GPU RPC pool (4070+3060+2070+M2, 32B) | 3.0 tok/s |
-| Same pool + speculation | 5.4 tok/s |
+| Same pool + speculation (Qwen3-1.7B draft) | 5.4 tok/s |
+| 4-GPU RPC pool (4070+3060+2070+M2, **70B**) | 2.2 tok/s |
+| Same pool + speculation (Llama 3.1 8B draft) | **4.1 tok/s** |
 
 RPC pooling is only useful when the model doesn't fit on one machine. When it does fit locally, don't pool — just use speculation with a remote drafter.
 
@@ -557,8 +571,14 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | `tightwad stop` | Stop the coordinator |
 | `tightwad swap MODEL` | Hot-swap model (workers persist) |
 | `tightwad benchmark` | Benchmark the running coordinator |
+| `tightwad inspect <model.gguf>` | Show GGUF model info (arch, layers, sizes) |
+| `tightwad inspect <model.gguf> --plan` | Show distribution plan for current cluster |
+| `tightwad distribute MODEL` | Copy model to workers via rsync/scp |
+| `tightwad distribute MODEL --dry-run` | Preview transfers without executing |
 
 Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
+
+`tightwad inspect` requires the `gguf` package: `pip install tightwad[inspect]`
 
 ## API Endpoints (Proxy)
 
@@ -633,16 +653,21 @@ pytest tests/ -v
 ```
 tightwad/
 ├── config.py        # YAML config loader (cluster + proxy)
-├── cli.py           # Click CLI (cluster + proxy commands)
+├── cli.py           # Click CLI (cluster + proxy + inspect + distribute)
 ├── coordinator.py   # llama-server lifecycle management
 ├── worker.py        # RPC worker health checks
 ├── proxy.py         # Speculative decoding proxy server
-└── speculation.py   # Verification algorithm (pure logic)
+├── speculation.py   # Verification algorithm (pure logic)
+├── gguf_inspect.py  # GGUF model analysis + distribution planning
+└── distribute.py    # rsync/scp model to workers in parallel
 tests/
 ├── test_config.py
 ├── test_coordinator.py
 ├── test_speculation.py
-└── test_proxy.py
+├── test_proxy.py
+├── test_inspect.py
+└── test_distribute.py
 configs/
-└── cluster.yaml     # Hardware topology + proxy config
+├── cluster.yaml              # Hardware topology + proxy config
+└── cluster-unraid-coord.yaml # Unraid coordinator (128GB RAM, 70B+ models)
 ```

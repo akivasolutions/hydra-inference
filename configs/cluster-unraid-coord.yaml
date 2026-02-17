@@ -7,7 +7,8 @@
 #
 # All real GPU work goes to RPC workers over the LAN.
 #
-# Draft model: Llama 3.2 3B (same tokenizer as Llama 3.3 70B = high acceptance rate)
+# Draft model: Llama 3.1 8B (same architecture as Llama 3.3 70B = 100% acceptance rate)
+# NOTE: Llama 3.2 3B does NOT work — different architecture, 1.6% acceptance.
 
 coordinator:
   host: 0.0.0.0
@@ -72,16 +73,16 @@ models:
     predict: 4096
     flash_attn: true
 
-# Speculative decoding: Llama 3.2 3B drafts, Llama 3.3 70B verifies
-# Same tokenizer = high acceptance rate + logprobs verification works
+# Speculative decoding: Llama 3.1 8B drafts, Llama 3.3 70B verifies
+# Same architecture = 100% acceptance rate + logprobs verification works
 proxy:
   host: 0.0.0.0
   port: 8088
   max_draft_tokens: 32
   fallback_on_draft_failure: true
   draft:
-    url: http://127.0.0.1:8081     # Llama 3.2 3B on Unraid CPU (128GB RAM)
-    model_name: llama-3.2-3b
+    url: http://127.0.0.1:8081     # Llama 3.1 8B on Unraid (128GB RAM)
+    model_name: llama-3.1-8b
     backend: llamacpp
   target:
     url: http://127.0.0.1:8080     # Coordinator URL (same machine)
