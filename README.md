@@ -545,7 +545,7 @@ The key difference for speculative decoding: llama.cpp RPC ships 100–300 MB of
 
 TGI is optimized for the HuggingFace ecosystem and integrates well with their services. It's an excellent tool if you're already in that ecosystem.
 
-Tightwad is MIT licensed, has no vendor affiliation, and works with your existing Ollama or llama.cpp setup without any additional accounts or services. It's backend-agnostic by design.
+Tightwad has no vendor affiliation, and works with your existing Ollama or llama.cpp setup without any additional accounts or services. It's backend-agnostic by design.
 
 ### The honest summary
 
