@@ -32,6 +32,28 @@ Mixed-vendor GPU inference cluster manager with speculative decoding proxy. Pool
 > Tightwad uses the small model to do most of the work, and the big model to catch mistakes.
 > Because catching mistakes is cheap — it's one batch operation, not N serial ones.
 
+## What Does This Look Like as a User?
+
+**You change nothing about your workflow.** Tightwad is invisible.
+
+| | Before | After |
+|---|---|---|
+| **Your chat app** | Open WebUI, ChatBot UI, etc. | Same app, no changes |
+| **Points at** | `http://your-server:11434` (Ollama) | `http://your-server:8088` (Tightwad) |
+| **Model you talk to** | Qwen3-72B | Qwen3-72B (same model, same output) |
+| **What you see** | Normal chat responses | Normal chat responses, just faster |
+| **The small model** | Doesn't exist | Hidden — you never see it |
+
+**That's it.** One URL change. Same UI, same model, same quality. Tightwad handles everything behind the scenes:
+
+1. Your chat sends a message to Tightwad's port
+2. Behind the curtain, a small model quickly predicts the next several tokens
+3. The big model verifies them all in one shot (instead of generating one at a time)
+4. Tightwad streams the verified tokens back to your chat
+5. You see the response faster — and it's **identical** to what the big model would have produced alone
+
+The small model is like autocomplete on your phone — it suggests, the big model accepts or corrects. You only ever see the final, verified output.
+
 ## Two Modes
 
 ### 1. RPC Cluster — Pool GPUs into one endpoint
