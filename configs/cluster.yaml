@@ -51,6 +51,19 @@ proxy:
     url: http://192.168.1.101:8081
     model_name: qwen3-8b
     backend: llamacpp
+  # drafters:
+  #   - url: http://192.168.1.101:8081
+  #     model_name: qwen3-8b
+  #     backend: llamacpp
+  #   - url: http://192.168.1.102:8081
+  #     model_name: qwen3-1.7b
+  #     backend: llamacpp
+  #   - url: http://192.168.1.103:11434
+  #     model_name: qwen3:1.7b
+  #     backend: ollama
+  #   - url: http://192.168.1.104:8081  # Linux 7900 XTX rig (needs setup)
+  #     model_name: qwen3-8b
+  #     backend: llamacpp
   target:
     url: http://192.168.1.100:8080
     model_name: qwen3-32b

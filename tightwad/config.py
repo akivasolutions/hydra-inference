@@ -54,6 +54,7 @@ class ProxyConfig:
     port: int = 8088
     max_draft_tokens: int = 8
     fallback_on_draft_failure: bool = True
+    drafters: list[ServerEndpoint] = field(default_factory=list)
 
 
 @dataclass
@@ -141,6 +142,14 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         p = raw["proxy"]
         draft = p["draft"]
         target = p["target"]
+        drafters = []
+        for d in p.get("drafters", []):
+            drafters.append(ServerEndpoint(
+                url=d["url"],
+                model_name=d["model_name"],
+                backend=d.get("backend", "llamacpp"),
+            ))
+
         proxy = ProxyConfig(
             draft=ServerEndpoint(url=draft["url"], model_name=draft["model_name"], backend=draft.get("backend", "llamacpp")),
             target=ServerEndpoint(url=target["url"], model_name=target["model_name"], backend=target.get("backend", "llamacpp")),
@@ -148,6 +157,7 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             port=p.get("port", 8088),
             max_draft_tokens=p.get("max_draft_tokens", 8),
             fallback_on_draft_failure=p.get("fallback_on_draft_failure", True),
+            drafters=drafters,
         )
 
     return ClusterConfig(

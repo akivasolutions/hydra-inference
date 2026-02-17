@@ -228,7 +228,12 @@ def proxy_start(ctx):
 
     pc = config.proxy
     console.print(f"[bold]Starting speculative decoding proxy...[/bold]")
-    console.print(f"  Draft:  {pc.draft.model_name} @ {pc.draft.url}")
+    if pc.drafters:
+        console.print(f"  [bold]Drafters ({len(pc.drafters)}):[/bold]")
+        for d in pc.drafters:
+            console.print(f"    - {d.model_name} @ {d.url} ({d.backend})")
+    else:
+        console.print(f"  Draft:  {pc.draft.model_name} @ {pc.draft.url}")
     console.print(f"  Target: {pc.target.model_name} @ {pc.target.url}")
     console.print(f"  Max draft tokens: {pc.max_draft_tokens}")
     console.print(f"  Listening on: {pc.host}:{pc.port}")
@@ -272,12 +277,34 @@ def proxy_status(ctx):
         console.print("[dim]○ Proxy not running[/dim]")
         return
 
-    # Draft/target health
-    for role in ("draft", "target"):
-        info = data[role]
+    # Drafters or single draft health
+    if "drafters" in data:
+        console.print("  [bold]Drafters:[/bold]")
+        drafter_table = Table()
+        drafter_table.add_column("Model")
+        drafter_table.add_column("URL")
+        drafter_table.add_column("Backend")
+        drafter_table.add_column("Health")
+        drafter_table.add_column("Wins")
+        for d in data["drafters"]:
+            alive = d["health"].get("alive", False)
+            health_str = "[green]alive[/green]" if alive else "[red]down[/red]"
+            drafter_table.add_row(
+                d["model"], d["url"], d["backend"],
+                health_str, str(d["wins"]),
+            )
+        console.print(drafter_table)
+    elif "draft" in data:
+        info = data["draft"]
         alive = info["health"].get("alive", False)
         icon = "[green]●[/green]" if alive else "[red]●[/red]"
-        console.print(f"  {icon} {role.title()}: {info['model']} @ {info['url']}")
+        console.print(f"  {icon} Draft: {info['model']} @ {info['url']}")
+
+    # Target health
+    target = data["target"]
+    t_alive = target["health"].get("alive", False)
+    t_icon = "[green]●[/green]" if t_alive else "[red]●[/red]"
+    console.print(f"  {t_icon} Target: {target['model']} @ {target['url']}")
 
     # Stats
     stats = data.get("stats", {})
@@ -295,3 +322,57 @@ def proxy_status(ctx):
         console.print(table)
     else:
         console.print("\n[dim]No speculation rounds yet.[/dim]")
+
+
+@cli.command()
+@click.option("--direct", is_flag=True, help="Chat directly with target (no speculation, for comparison)")
+@click.pass_context
+def chat(ctx, direct):
+    """Interactive chat with the speculative decoding proxy."""
+    import httpx
+    config = _load(ctx)
+    if config.proxy is None:
+        console.print("[red]No proxy section in config. Add it to cluster.yaml.[/red]")
+        sys.exit(1)
+    pc = config.proxy
+    if direct:
+        base_url = pc.target.url
+        console.print(f"\n[bold]Direct mode:[/bold] {pc.target.model_name} @ {pc.target.url}")
+    else:
+        base_url = f"http://127.0.0.1:{pc.port}"
+        try:
+            httpx.get(f"{base_url}/v1/tightwad/status", timeout=3.0)
+        except Exception:
+            console.print("[red]Proxy not running. Start it first:[/red]")
+            console.print("  tightwad proxy start")
+            sys.exit(1)
+        console.print(f"\n[bold]Speculative mode:[/bold] proxy @ :{pc.port} -> {pc.target.model_name}")
+    console.print("[dim]Type your message and press Enter. Ctrl+C to quit.[/dim]\n")
+    messages: list[dict] = []
+    while True:
+        try:
+            user_input = console.input("[bold green]You:[/bold green] ")
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Goodbye.[/dim]")
+            break
+        if not user_input.strip():
+            continue
+        messages.append({"role": "user", "content": user_input})
+        try:
+            url = f"{base_url}/v1/chat/completions"
+            body = {"messages": messages, "max_tokens": 1024, "temperature": 0.0, "stream": False}
+            with httpx.Client(timeout=120.0) as client:
+                resp = client.post(url, json=body)
+                resp.raise_for_status()
+                data = resp.json()
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not text:
+                text = data.get("choices", [{}])[0].get("text", "")
+            console.print(f"[bold cyan]AI:[/bold cyan] {text}\n")
+            messages.append({"role": "assistant", "content": text})
+        except KeyboardInterrupt:
+            console.print("\n[dim]Interrupted.[/dim]\n")
+            messages.pop()
+        except Exception as e:
+            console.print(f"\n[red]Error: {e}[/red]\n")
+            messages.pop()

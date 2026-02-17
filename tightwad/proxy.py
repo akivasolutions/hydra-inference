@@ -11,13 +11,15 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import asyncio
+
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from .config import ProxyConfig
+from .config import ProxyConfig, ServerEndpoint
 from .speculation import (
     DraftToken,
     TargetLogprob,
@@ -38,6 +40,7 @@ class ProxyStats:
     total_bonus: int = 0
     total_resampled: int = 0
     total_tokens_output: int = 0
+    drafter_wins: dict[str, int] = field(default_factory=dict)
     start_time: float = field(default_factory=time.monotonic)
 
     @property
@@ -67,10 +70,20 @@ class SpeculativeProxy:
             base_url=config.target.url, timeout=120.0
         )
         self.stats = ProxyStats()
+        self._multi_drafter = bool(config.drafters)
+        self._winning_drafter: ServerEndpoint | None = None
+
+        # Per-drafter clients for multi-drafter mode
+        self.draft_clients: list[tuple[ServerEndpoint, httpx.AsyncClient]] = []
+        for drafter in config.drafters:
+            client = httpx.AsyncClient(base_url=drafter.url, timeout=30.0)
+            self.draft_clients.append((drafter, client))
 
     async def close(self):
         await self.draft_client.aclose()
         await self.target_client.aclose()
+        for _, client in self.draft_clients:
+            await client.aclose()
 
     async def check_server(self, url: str, backend: str) -> dict:
         try:
@@ -154,6 +167,140 @@ class SpeculativeProxy:
             tokens.append(DraftToken(token_id=0, logprob=0.0, text=text))
 
         return tokens
+
+    async def _draft_from_endpoint(
+        self, endpoint: ServerEndpoint, client: httpx.AsyncClient,
+        prompt: str, n: int, temperature: float,
+    ) -> list[DraftToken]:
+        """Draft tokens from a specific endpoint using its backend."""
+        if endpoint.backend == "ollama":
+            body = {
+                "model": endpoint.model_name,
+                "prompt": prompt,
+                "raw": True,
+                "stream": False,
+                "options": {"num_predict": n, "temperature": temperature},
+            }
+            url = f"{endpoint.url}/api/generate"
+            async with httpx.AsyncClient(timeout=30.0) as tmp:
+                resp = await tmp.post(url, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+            text = data.get("response", "") or data.get("thinking", "")
+            if not text:
+                return []
+            return [DraftToken(token_id=0, logprob=0.0, text=text)]
+        else:
+            body: dict = {
+                "prompt": prompt,
+                "max_tokens": n,
+                "temperature": temperature,
+                "logprobs": 1,
+                "stream": False,
+            }
+            resp = await client.post("/v1/completions", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+            choice = data["choices"][0]
+            text = choice.get("text", "")
+            tokens: list[DraftToken] = []
+            logprobs_data = choice.get("logprobs")
+            if logprobs_data and logprobs_data.get("content"):
+                for entry in logprobs_data["content"]:
+                    tokens.append(DraftToken(
+                        token_id=entry.get("id", 0),
+                        logprob=entry.get("logprob", 0.0),
+                        text=entry.get("token", ""),
+                    ))
+            elif text:
+                tokens.append(DraftToken(token_id=0, logprob=0.0, text=text))
+            return tokens
+
+    async def draft_tokens_parallel(
+        self, prompt: str, n: int, temperature: float = 0.0,
+    ) -> list[DraftToken]:
+        """Race all drafters in parallel. Take the first llamacpp result
+        that arrives, or wait up to 0.5s for a better one after the first
+        result comes in."""
+
+        async def _run(endpoint: ServerEndpoint, client: httpx.AsyncClient):
+            return endpoint, await self._draft_from_endpoint(
+                endpoint, client, prompt, n, temperature
+            )
+
+        pending = {asyncio.ensure_future(_run(ep, cl)) for ep, cl in self.draft_clients}
+        candidates: list[tuple[ServerEndpoint, list[DraftToken]]] = []
+        has_llamacpp = False
+
+        # Wait for the first result
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                try:
+                    endpoint, tokens = task.result()
+                    if tokens:
+                        candidates.append((endpoint, tokens))
+                        if endpoint.backend == "llamacpp" and len(tokens) > 1:
+                            has_llamacpp = True
+                except Exception as exc:
+                    logger.warning("Drafter failed: %s", exc)
+
+            # If we have a llamacpp result, give others 0.3s to finish
+            if has_llamacpp and pending:
+                done2, pending = await asyncio.wait(pending, timeout=0.3)
+                for task in done2:
+                    try:
+                        endpoint, tokens = task.result()
+                        if tokens:
+                            candidates.append((endpoint, tokens))
+                    except Exception as exc:
+                        logger.warning("Drafter failed: %s", exc)
+                # Cancel stragglers
+                for task in pending:
+                    task.cancel()
+                break
+            elif candidates:
+                # Got a non-llamacpp result, give others 1s to provide a better one
+                done2, pending = await asyncio.wait(pending, timeout=1.0)
+                for task in done2:
+                    try:
+                        endpoint, tokens = task.result()
+                        if tokens:
+                            candidates.append((endpoint, tokens))
+                    except Exception as exc:
+                        logger.warning("Drafter failed: %s", exc)
+                for task in pending:
+                    task.cancel()
+                break
+
+        if not candidates:
+            logger.warning("All drafters failed, no candidates")
+            return []
+
+        # Pick best: prefer candidates with more individual tokens (llamacpp
+        # gives per-token logprobs, enabling batch verification). Among those,
+        # pick longest total text. Ties broken by highest mean logprob.
+        # Ollama returns 1 big text blob — deprioritize it since it forces
+        # text-match fallback.
+        def _score(pair):
+            ep, toks = pair
+            n_tokens = len(toks)
+            has_logprobs = ep.backend == "llamacpp" and n_tokens > 1
+            total_text = sum(len(t.text) for t in toks)
+            mean_lp = sum(t.logprob for t in toks) / n_tokens if toks else -999.0
+            return (has_logprobs, n_tokens, total_text, mean_lp)
+
+        winner_endpoint, winner_tokens = max(candidates, key=_score)
+        self._winning_drafter = winner_endpoint
+        self.stats.drafter_wins[winner_endpoint.url] = (
+            self.stats.drafter_wins.get(winner_endpoint.url, 0) + 1
+        )
+        logger.info(
+            "Drafter winner: %s (%s) — %d tokens, %d candidates",
+            winner_endpoint.model_name, winner_endpoint.url,
+            len(winner_tokens), len(candidates),
+        )
+        return winner_tokens
 
     async def _generate_target(
         self, prompt: str, n: int, temperature: float
@@ -354,10 +501,15 @@ class SpeculativeProxy:
         # Need llamacpp for both: draft must provide per-token IDs,
         # target must support logprobs in /v1/completions.
         # Ollama returns text blobs without token IDs, so text-match is used.
-        return (
-            self.config.target.backend == "llamacpp"
-            and self.config.draft.backend == "llamacpp"
-        )
+        if self.config.target.backend != "llamacpp":
+            return False
+        if self._multi_drafter:
+            # In multi-drafter mode, check the winning drafter's backend
+            return (
+                self._winning_drafter is not None
+                and self._winning_drafter.backend == "llamacpp"
+            )
+        return self.config.draft.backend == "llamacpp"
 
     async def speculation_round(
         self, prompt: str, temperature: float = 0.0
@@ -369,9 +521,14 @@ class SpeculativeProxy:
         """
         # Draft phase
         try:
-            draft = await self.draft_tokens(
-                prompt, self.config.max_draft_tokens, temperature
-            )
+            if self._multi_drafter:
+                draft = await self.draft_tokens_parallel(
+                    prompt, self.config.max_draft_tokens, temperature
+                )
+            else:
+                draft = await self.draft_tokens(
+                    prompt, self.config.max_draft_tokens, temperature
+                )
         except Exception as exc:
             if self.config.fallback_on_draft_failure:
                 logger.warning("Draft failed (%s: %s), falling back to target", type(exc).__name__, exc)
@@ -649,16 +806,10 @@ async def handle_chat_completion(request: Request):
 
 async def handle_status(request: Request):
     proxy = _get_proxy()
-    draft_health = await proxy.check_server(proxy.config.draft.url, proxy.config.draft.backend)
     target_health = await proxy.check_server(proxy.config.target.url, proxy.config.target.backend)
 
     stats = proxy.stats
-    return JSONResponse({
-        "draft": {
-            "url": proxy.config.draft.url,
-            "model": proxy.config.draft.model_name,
-            "health": draft_health,
-        },
+    response: dict = {
         "target": {
             "url": proxy.config.target.url,
             "model": proxy.config.target.model_name,
@@ -679,7 +830,29 @@ async def handle_status(request: Request):
             "effective_tokens_per_round": round(stats.effective_tokens_per_round, 2),
             "uptime_seconds": round(stats.uptime_seconds, 1),
         },
-    })
+    }
+
+    if proxy._multi_drafter:
+        drafters_info = []
+        for endpoint, _ in proxy.draft_clients:
+            health = await proxy.check_server(endpoint.url, endpoint.backend)
+            drafters_info.append({
+                "url": endpoint.url,
+                "model": endpoint.model_name,
+                "backend": endpoint.backend,
+                "health": health,
+                "wins": stats.drafter_wins.get(endpoint.url, 0),
+            })
+        response["drafters"] = drafters_info
+    else:
+        draft_health = await proxy.check_server(proxy.config.draft.url, proxy.config.draft.backend)
+        response["draft"] = {
+            "url": proxy.config.draft.url,
+            "model": proxy.config.draft.model_name,
+            "health": draft_health,
+        }
+
+    return JSONResponse(response)
 
 
 async def handle_models(request: Request):
@@ -702,6 +875,101 @@ async def handle_models(request: Request):
     })
 
 
+CHAT_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Tightwad Chat</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:#1a1a2e;color:#e0e0e0;height:100vh;display:flex;flex-direction:column}
+#header{padding:12px 20px;background:#16213e;border-bottom:1px solid #0f3460;display:flex;align-items:center;gap:12px}
+#header h1{font-size:18px;color:#e94560}
+#header span{font-size:13px;color:#888}
+#status{font-size:12px;color:#4ecca3;margin-left:auto;cursor:pointer}
+#messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.msg{max-width:80%;padding:12px 16px;border-radius:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;font-size:15px}
+.user{align-self:flex-end;background:#0f3460;color:#fff;border-bottom-right-radius:4px}
+.ai{align-self:flex-start;background:#16213e;border:1px solid #0f3460;border-bottom-left-radius:4px}
+.ai.streaming{border-color:#e94560}
+#input-area{padding:16px 20px;background:#16213e;border-top:1px solid #0f3460;display:flex;gap:10px}
+#input{flex:1;padding:12px 16px;border-radius:8px;border:1px solid #0f3460;background:#1a1a2e;color:#fff;font-size:15px;outline:none;font-family:inherit}
+#input:focus{border-color:#e94560}
+#send{padding:12px 24px;border-radius:8px;border:none;background:#e94560;color:#fff;font-size:15px;cursor:pointer;font-weight:600}
+#send:hover{background:#c73e54}
+#send:disabled{background:#555;cursor:not-allowed}
+</style></head><body>
+<div id="header"><h1>Tightwad</h1><span>Speculative Decoding Chat</span><span id="status" onclick="checkStatus()">checking...</span></div>
+<div id="messages"></div>
+<div id="input-area">
+<input id="input" placeholder="Type a message..." autofocus>
+<button id="send" onclick="send()">Send</button>
+</div>
+<script>
+const msgs=document.getElementById('messages'),input=document.getElementById('input'),btn=document.getElementById('send');
+let messages=[], busy=false;
+
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!busy){e.preventDefault();send()}});
+
+async function checkStatus(){
+  const el=document.getElementById('status');
+  try{
+    const r=await fetch('/v1/tightwad/status');const d=await r.json();
+    const n=d.drafters?d.drafters.length:1;
+    const t=d.target?.model||'?';
+    el.textContent=n+' drafter'+(n>1?'s':'')+' > '+t;
+    el.style.color='#4ecca3';
+  }catch{el.textContent='error';el.style.color='#e94560'}
+}
+
+function addMsg(role,text){
+  const div=document.createElement('div');
+  div.className='msg '+(role==='user'?'user':'ai');
+  div.textContent=text;
+  msgs.appendChild(div);
+  msgs.scrollTop=msgs.scrollHeight;
+  return div;
+}
+
+async function send(){
+  const text=input.value.trim();if(!text||busy)return;
+  busy=true;btn.disabled=true;input.value='';
+  messages.push({role:'user',content:text});
+  addMsg('user',text);
+  const aiDiv=addMsg('ai','');
+  aiDiv.classList.add('streaming');
+  let full='';
+  try{
+    const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({messages:messages,max_tokens:1024,temperature:0,stream:true})});
+    const reader=r.body.getReader();const dec=new TextDecoder();let buf='';
+    while(true){
+      const{done,value}=await reader.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split('\\n');buf=lines.pop();
+      for(const line of lines){
+        if(!line.startsWith('data: '))continue;
+        const payload=line.slice(6);if(payload==='[DONE]')continue;
+        try{
+          const d=JSON.parse(payload);
+          const c=d.choices?.[0];
+          const chunk=c?.text||c?.delta?.content||'';
+          if(chunk){full+=chunk;aiDiv.textContent=full;msgs.scrollTop=msgs.scrollHeight}
+        }catch{}
+      }
+    }
+  }catch(e){full='Error: '+e.message;aiDiv.textContent=full}
+  aiDiv.classList.remove('streaming');
+  messages.push({role:'assistant',content:full});
+  busy=false;btn.disabled=false;input.focus();
+}
+
+checkStatus();
+</script></body></html>"""
+
+
+async def handle_chat_ui(request: Request):
+    return HTMLResponse(CHAT_HTML)
+
+
 def create_app(config: ProxyConfig) -> Starlette:
     global _proxy
     _proxy = SpeculativeProxy(config)
@@ -714,6 +982,7 @@ def create_app(config: ProxyConfig) -> Starlette:
 
     app = Starlette(
         routes=[
+            Route("/", handle_chat_ui, methods=["GET"]),
             Route("/v1/completions", handle_completion, methods=["POST"]),
             Route("/v1/chat/completions", handle_chat_completion, methods=["POST"]),
             Route("/v1/models", handle_models, methods=["GET"]),
