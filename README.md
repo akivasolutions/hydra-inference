@@ -32,8 +32,8 @@ Client (OpenAI API)
 
 ```bash
 # Install
-git clone https://github.com/akivasolutions/hydra-inference.git
-cd hydra-inference
+git clone https://github.com/akivasolutions/tightwad.git
+cd tightwad
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
