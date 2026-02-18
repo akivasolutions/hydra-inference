@@ -929,7 +929,8 @@ pytest tests/ -v
 
 ```
 tightwad/
-├── config.py        # YAML config loader (cluster + proxy)
+├── config.py        # YAML config loader (cluster + proxy); validates upstream URLs at load time
+├── ssrf.py          # SSRF protection: scheme allowlist, private-IP blocklist, DNS-rebinding check
 ├── cli.py           # Click CLI (cluster + proxy + inspect + distribute + doctor + logs)
 ├── doctor.py        # Diagnostic checks (config, binaries, network, versions)
 ├── coordinator.py   # llama-server lifecycle management
@@ -954,6 +955,7 @@ tests/
 ├── test_coordinator.py
 ├── test_speculation.py
 ├── test_proxy.py
+├── test_ssrf.py        # SSRF protection: scheme checks, IP blocklist, DNS-rebinding, config integration
 ├── test_inspect.py
 ├── test_distribute.py
 ├── test_doctor.py
