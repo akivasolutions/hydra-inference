@@ -119,9 +119,12 @@ docker run --rm --network host \
 
 # Or with Docker Compose (edit docker-compose.yml with your IPs first)
 docker compose up
+# Logs persist in ./logs/ across restarts
 ```
 
 > **Mac/Docker Desktop:** Replace `--network host` with `-p 8088:8088` and use `host.docker.internal` instead of LAN IPs.
+
+Docker Compose includes a healthcheck (`/v1/models` every 10s) and mounts `./logs/` for persistent proxy logs.
 
 All `TIGHTWAD_*` env vars:
 
