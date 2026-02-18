@@ -321,9 +321,10 @@ async def main():
             all_results.append({"config": name, "error": str(e)})
 
     # Write results
-    with open("benchmark_results.json", "w") as f:
+    os.makedirs("benchmarks", exist_ok=True)
+    with open("benchmarks/benchmark_results.json", "w") as f:
         json.dump(all_results, f, indent=2)
-    print(f"\n\nResults written to benchmark_results.json")
+    print(f"\n\nResults written to benchmarks/benchmark_results.json")
 
     # Summary table
     print("\n" + "="*90)

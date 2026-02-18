@@ -428,6 +428,19 @@ Same-family (Qwen3-8B → Qwen3-32B, local Ollama):
 | Creative    | 39%            | 6      | Lowest — many valid outputs |
 | **Average** | **63.8%**      | 25.6   | |
 
+#### Same-Family, Cloud (Llama 3.1 8B → Llama 3.1 405B, OpenRouter)
+
+| Category | Acceptance | Notes |
+|----------|:----------:|-------|
+| Code | 37.7% | Deterministic output matches well |
+| Reasoning | 23.8% | Step-by-step math overlaps |
+| List | 15.4% | Formatting varies |
+| Factual | 12.6% | Phrasing diverges at scale |
+| Creative | 3.1% | Nearly no overlap |
+| **Overall** | **18.9%** | Network latency negates wall-clock speedup |
+
+> **Important:** Over cloud APIs, the per-round network latency (~3-8s per API call) makes speculative decoding *slower* than baseline despite positive acceptance rates. Spec decoding shines when both models are local or very low-latency. For cloud targets, the value is in reducing API calls (cost savings), not wall-clock speedup.
+
 #### Cross-Family (Qwen3-8B → Llama 3.3 70B, OpenRouter)
 
 | **Average** | **~3%** | Nearly zero — different tokenizers and training data |
@@ -645,6 +658,22 @@ llama-server -m model.gguf --host 0.0.0.0 --port 8090 -ngl 999 \
 - **macOS:** Add `rpc-server` to System Settings → Network → Firewall → Options, or: `sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /path/to/rpc-server && sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /path/to/rpc-server`
 - **Linux:** `sudo ufw allow 50052/tcp`
 
+## Benchmarking
+
+Benchmark scripts measure acceptance rates and wall-clock speedup across model pairs. See the [Benchmarking wiki page](https://github.com/akivasolutions/tightwad/wiki/Benchmarking) for full methodology and reproduction instructions.
+
+```bash
+# Multi-config benchmark (local Ollama + cloud APIs)
+OPENROUTER_API_KEY="sk-or-..." .venv/bin/python scripts/benchmark_proxy.py
+
+# Llama 3.1 8B (local) → Llama 3.1 405B (OpenRouter)
+# Requires local llama-server running on port 8081
+llama-server -m ~/models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf --port 8081 -ngl 999
+OPENROUTER_API_KEY="sk-or-..." .venv/bin/python scripts/benchmark_openrouter.py
+```
+
+Results are saved as JSON in `benchmarks/`.
+
 ## Development
 
 ```bash
@@ -666,6 +695,13 @@ tightwad/
 ├── distribute.py    # rsync/scp model to workers in parallel
 ├── manifest.py      # Swarm manifest generation + bitfield tracking
 └── swarm_transfer.py # P2P seeder (Starlette) + puller (async httpx)
+scripts/
+├── benchmark_proxy.py      # Multi-config spec decoding benchmark
+├── benchmark_openrouter.py # Llama 8B → 405B OpenRouter benchmark
+├── benchmark.sh            # Quick proxy health check
+├── install-coordinator.sh  # Coordinator setup helper
+└── install-worker.sh       # Worker setup helper
+benchmarks/                 # Benchmark result JSON files
 tests/
 ├── test_config.py
 ├── test_coordinator.py
