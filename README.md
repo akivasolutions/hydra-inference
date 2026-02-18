@@ -6,15 +6,15 @@ Mixed-vendor GPU inference cluster manager with speculative decoding proxy. Pool
 
 ```
 YOUR HARDWARE (any mix works)                         TIGHTWAD
-                                                          │
+                                                         │
   RTX 4070 Ti Super (16GB, NVIDIA) ──────────┐           │
   RTX 3060 (12GB, NVIDIA) ───────────────────┤           │
-  RTX 2070 (8GB, NVIDIA) ────────────────────┤  cluster  │   ┌──────────────┐
-  GTX 770 (2GB — yes, really) ───────────────┤──────────►│──►│ OpenAI API   │
-  RX 7900 XTX (24GB, AMD!) ─────────────────┤  yaml     │   │ localhost:8088│
-  Old Xeon workstation (CPU only) ───────────┤           │   └──────────────┘
+  RTX 2070 (8GB, NVIDIA) ────────────────────┤  cluster  │   ┌──────────────-┐
+  GTX 770 (2GB — yes, really) ───────────────┤──────────►│──►│ OpenAI API    │
+  RX 7900 XTX (24GB, AMD!) ─────────────────-┤  yaml     │   │ localhost:8088│
+  Old Xeon workstation (CPU only) ───────────┤           │   └──────────────-┘
   Your laptop (M2, CPU draft) ───────────────┘           │
-                                                          │
+                                                         │
   CUDA ✓   ROCm ✓   CPU ✓   Mixed ✓            One endpoint.
 ```
 
