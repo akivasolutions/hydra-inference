@@ -9,9 +9,13 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from click.testing import CliRunner
+
+from tightwad.cli import cli
 from tightwad.config import load_config, load_proxy_from_env
 from tightwad.init_wizard import (
     DiscoveredServer,
+    detect_backend,
     generate_cluster_yaml,
     identify_server,
 )
@@ -186,3 +190,122 @@ async def test_identify_server_llamacpp():
     assert server.backend == "llamacpp"
     assert server.models == ["qwen3-32b"]
     assert server.status == "healthy"
+
+
+# --- detect_backend ---
+
+
+def test_detect_backend_ollama():
+    assert detect_backend("http://192.168.1.10:11434") == "ollama"
+
+
+def test_detect_backend_llamacpp():
+    assert detect_backend("http://192.168.1.10:8080") == "llamacpp"
+
+
+def test_detect_backend_no_port():
+    assert detect_backend("http://192.168.1.10") == "llamacpp"
+
+
+# --- Non-interactive init CLI ---
+
+
+def test_non_interactive_init(tmp_path):
+    """--draft-url + --target-url generates config without prompts."""
+    output = tmp_path / "cluster.yaml"
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "init",
+        "--draft-url", "http://192.168.1.101:11434",
+        "--draft-model", "qwen3:8b",
+        "--target-url", "http://192.168.1.100:8080",
+        "--target-model", "qwen3:32b",
+        "-o", str(output),
+        "-y",
+    ])
+    assert result.exit_code == 0, result.output
+    assert output.exists()
+
+    config = load_config(str(output))
+    assert config.proxy is not None
+    assert config.proxy.draft.url == "http://192.168.1.101:11434"
+    assert config.proxy.draft.model_name == "qwen3:8b"
+    assert config.proxy.draft.backend == "ollama"
+    assert config.proxy.target.url == "http://192.168.1.100:8080"
+    assert config.proxy.target.model_name == "qwen3:32b"
+    assert config.proxy.target.backend == "llamacpp"
+
+
+def test_non_interactive_explicit_backends(tmp_path):
+    """Explicit --draft-backend and --target-backend override auto-detect."""
+    output = tmp_path / "cluster.yaml"
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "init",
+        "--draft-url", "http://192.168.1.101:8081",
+        "--draft-model", "qwen3-8b",
+        "--draft-backend", "llamacpp",
+        "--target-url", "http://192.168.1.100:8080",
+        "--target-model", "qwen3-32b",
+        "--target-backend", "llamacpp",
+        "--max-draft-tokens", "64",
+        "-o", str(output),
+        "-y",
+    ])
+    assert result.exit_code == 0, result.output
+
+    config = load_config(str(output))
+    assert config.proxy.draft.backend == "llamacpp"
+    assert config.proxy.target.backend == "llamacpp"
+    assert config.proxy.max_draft_tokens == 64
+
+
+def test_non_interactive_missing_model():
+    """--draft-url without --draft-model should error."""
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "init",
+        "--draft-url", "http://192.168.1.101:11434",
+        "--target-url", "http://192.168.1.100:11434",
+        "--target-model", "qwen3:32b",
+    ])
+    assert result.exit_code != 0
+    assert "draft-model" in result.output.lower() or "draft-model" in str(result.exception).lower()
+
+
+def test_yes_flag_overwrites(tmp_path):
+    """-y overwrites existing file without prompt."""
+    output = tmp_path / "cluster.yaml"
+    output.write_text("old content")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "init",
+        "--draft-url", "http://192.168.1.101:11434",
+        "--draft-model", "qwen3:8b",
+        "--target-url", "http://192.168.1.100:11434",
+        "--target-model", "qwen3:32b",
+        "-o", str(output),
+        "-y",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "old content" not in output.read_text()
+    assert "proxy" in output.read_text()
+
+
+def test_no_yes_flag_existing_file_errors(tmp_path):
+    """Without -y, existing file should error in non-interactive mode."""
+    output = tmp_path / "cluster.yaml"
+    output.write_text("old content")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "init",
+        "--draft-url", "http://192.168.1.101:11434",
+        "--draft-model", "qwen3:8b",
+        "--target-url", "http://192.168.1.100:11434",
+        "--target-model", "qwen3:32b",
+        "-o", str(output),
+    ])
+    assert result.exit_code != 0
+    assert "already exists" in result.output

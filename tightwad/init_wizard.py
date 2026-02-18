@@ -69,10 +69,10 @@ def detect_subnet() -> str:
 
 def _subnet_hosts(subnet: str) -> list[str]:
     """Generate all 254 host IPs for a /24 subnet."""
-    base = subnet.rsplit(".", 1)[0]  # e.g. "192.168.1.X" from "192.168.1.X.0/24"
+    base = subnet.rsplit(".", 1)[0]  # e.g. "192.168.1" from "192.168.1.0/24"
     if "/" in base:
         base = base.split("/")[0]
-    # Strip trailing .0 if present from "192.168.1.X.0"
+    # Strip trailing .0 if present from "192.168.1.0"
     if base.endswith(".0"):
         base = base[:-2]
     return [f"{base}.{i}" for i in range(1, 255)]
@@ -233,6 +233,13 @@ def _pick_server(console: Console, servers: list[DiscoveredServer], role: str) -
         model_name = input("  Model name (e.g. qwen3:32b): ").strip() or server.backend
 
     return server, model_name
+
+
+def detect_backend(url: str) -> str:
+    """Guess backend from URL port. 11434 = ollama, else llamacpp."""
+    from urllib.parse import urlparse
+    port = urlparse(url).port or 80
+    return "ollama" if port == 11434 else "llamacpp"
 
 
 def generate_cluster_yaml(
