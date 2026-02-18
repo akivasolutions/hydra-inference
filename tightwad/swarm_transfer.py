@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -17,15 +18,68 @@ from typing import Callable
 
 import httpx
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .manifest import PieceBitfield, PieceInfo, SwarmManifest, verify_piece
 
 logger = logging.getLogger("tightwad.swarm")
 
 SWARM_DIR = Path.home() / ".tightwad"
+
+
+class TokenAuthMiddleware:
+    """Starlette middleware that requires a Bearer token on all requests."""
+
+    def __init__(self, app: ASGIApp, token: str) -> None:
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
+        auth = request.headers.get("authorization", "")
+        if auth != f"Bearer {self.token}":
+            response = Response(status_code=401, content="Unauthorized")
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+
+class IPFilterMiddleware:
+    """Starlette middleware that restricts access to allowed IP networks."""
+
+    def __init__(self, app: ASGIApp, allowed_networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network]) -> None:
+        self.app = app
+        self.allowed_networks = allowed_networks
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        client = scope.get("client")
+        if client:
+            try:
+                client_ip = ipaddress.ip_address(client[0])
+            except ValueError:
+                # Non-IP client (e.g. test client) — deny by default
+                response = Response(status_code=403, content="Forbidden")
+                await response(scope, receive, send)
+                return
+            if not any(client_ip in net for net in self.allowed_networks):
+                response = Response(status_code=403, content="Forbidden")
+                await response(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
 
 
 def _pidfile_for(model: str) -> Path:
@@ -90,6 +144,8 @@ def create_seeder_app(
     model_path: Path,
     manifest: SwarmManifest,
     bitfield: PieceBitfield,
+    token: str | None = None,
+    allowed_ips: list[str] | None = None,
 ) -> Starlette:
     global _seeder_manifest, _seeder_bitfield, _seeder_model_path, _seeder_start_time
     _seeder_manifest = manifest
@@ -103,6 +159,15 @@ def create_seeder_app(
         Route("/pieces/{index:int}", handle_piece, methods=["GET"]),
         Route("/health", handle_health, methods=["GET"]),
     ])
+
+    # Wrap with auth middleware (token checked before IP filter)
+    if allowed_ips:
+        networks = [ipaddress.ip_network(ip, strict=False) for ip in allowed_ips]
+        app = IPFilterMiddleware(app, networks)
+
+    if token:
+        app = TokenAuthMiddleware(app, token)
+
     return app
 
 
@@ -142,16 +207,24 @@ class SwarmPuller:
         bitfield: PieceBitfield,
         peers: list[str],
         max_concurrent: int = 4,
+        token: str | None = None,
     ):
         self.model_path = model_path
         self.manifest = manifest
         self.bitfield = bitfield
         self.peers = [PeerState(url=url.rstrip("/")) for url in peers]
         self.max_concurrent = max_concurrent
+        self.token = token
         self._file_preallocated = False
 
+    @property
+    def _auth_headers(self) -> dict[str, str]:
+        if self.token:
+            return {"Authorization": f"Bearer {self.token}"}
+        return {}
+
     async def discover_peer_bitfields(self) -> None:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers=self._auth_headers) as client:
             tasks = [self._fetch_bitfield(client, peer) for peer in self.peers]
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -206,7 +279,7 @@ class SwarmPuller:
         async with sem:
             peer.active += 1
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:
+                async with httpx.AsyncClient(timeout=120.0, headers=self._auth_headers) as client:
                     resp = await client.get(f"{peer.url}/pieces/{piece.index}")
                     resp.raise_for_status()
                     data = resp.content
@@ -303,10 +376,12 @@ def run_seeder(
     bitfield: PieceBitfield,
     host: str = "0.0.0.0",
     port: int = 9080,
+    token: str | None = None,
+    allowed_ips: list[str] | None = None,
 ) -> None:
     """Start seeder HTTP server (blocking)."""
     import uvicorn
-    app = create_seeder_app(model_path, manifest, bitfield)
+    app = create_seeder_app(model_path, manifest, bitfield, token=token, allowed_ips=allowed_ips)
     write_seeder_pidfile(manifest.model)
     try:
         uvicorn.run(app, host=host, port=port, log_level="info")
@@ -321,7 +396,8 @@ def run_puller(
     peers: list[str],
     max_concurrent: int = 4,
     progress_callback: Callable[[int, int, int], None] | None = None,
+    token: str | None = None,
 ) -> bool:
     """Run the puller (blocking). Returns True if successful."""
-    puller = SwarmPuller(model_path, manifest, bitfield, peers, max_concurrent)
+    puller = SwarmPuller(model_path, manifest, bitfield, peers, max_concurrent, token=token)
     return asyncio.run(puller.run(progress_callback))

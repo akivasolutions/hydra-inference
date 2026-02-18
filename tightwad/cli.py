@@ -658,7 +658,9 @@ def swarm():
 @click.argument("model_path", type=click.Path(exists=True))
 @click.option("--port", default=9080, type=int, help="Seeder port (default: 9080)")
 @click.option("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
-def swarm_seed(model_path, port, host):
+@click.option("--token", default=None, help="Require Bearer token for all requests")
+@click.option("--allowed-ips", default=None, multiple=True, help="Restrict access to IP/CIDR (repeatable)")
+def swarm_seed(model_path, port, host, token, allowed_ips):
     """Start a swarm seeder for a model file."""
     from pathlib import Path
 
@@ -689,8 +691,15 @@ def swarm_seed(model_path, port, host):
     console.print(f"  Model:  {m.model} ({m.filename})")
     console.print(f"  Pieces: {len(bf.have)}/{m.num_pieces} ({bf.completion_pct():.0f}%)")
     console.print(f"  Listen: {host}:{port}")
+    if token:
+        console.print(f"  Auth:   Bearer token required")
+    if allowed_ips:
+        console.print(f"  IPs:    {', '.join(allowed_ips)}")
 
-    swarm_mod.run_seeder(model_path, m, bf, host=host, port=port)
+    swarm_mod.run_seeder(
+        model_path, m, bf, host=host, port=port,
+        token=token, allowed_ips=list(allowed_ips) if allowed_ips else None,
+    )
 
 
 @swarm.command("pull")
@@ -698,7 +707,8 @@ def swarm_seed(model_path, port, host):
 @click.option("--manifest", "manifest_source", required=True, help="Path or URL to manifest")
 @click.option("--peer", "peers", multiple=True, required=True, help="Peer URL (repeatable)")
 @click.option("--parallel", default=4, type=int, help="Max concurrent downloads (default: 4)")
-def swarm_pull(dest_path, manifest_source, peers, parallel):
+@click.option("--token", default=None, help="Bearer token for authenticated peers")
+def swarm_pull(dest_path, manifest_source, peers, parallel, token):
     """Pull a model from swarm peers."""
     from pathlib import Path
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
@@ -708,8 +718,9 @@ def swarm_pull(dest_path, manifest_source, peers, parallel):
     # Load manifest from file or URL
     if manifest_source.startswith("http://") or manifest_source.startswith("https://"):
         import httpx
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         console.print(f"Fetching manifest from {manifest_source}...")
-        resp = httpx.get(manifest_source, timeout=30.0)
+        resp = httpx.get(manifest_source, timeout=30.0, headers=headers)
         resp.raise_for_status()
         m = manifest_mod.SwarmManifest.from_dict(resp.json())
     else:
@@ -747,6 +758,7 @@ def swarm_pull(dest_path, manifest_source, peers, parallel):
             dest_path, m, bf, list(peers),
             max_concurrent=parallel,
             progress_callback=on_progress,
+            token=token,
         )
 
     if ok:

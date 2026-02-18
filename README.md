@@ -212,6 +212,8 @@ A realistic three-machine setup you can reproduce in ~30 minutes. Start with two
 
 **Expected results:** 58–64% average token acceptance, up to 88% on reasoning tasks. Machine C adds throughput even without a GPU.
 
+> **Replace all `192.168.1.x` addresses below with your actual machine IPs.** Find them with `ip addr` (Linux), `ipconfig` (Windows), or `ipconfig getifaddr en0` (macOS).
+
 ---
 
 ### Step 1 — On Machine B: Start the draft model
@@ -395,15 +397,18 @@ response = client.chat.completions.create(
 | Creative writing | ~34% |
 | **Average** | **~58%** |
 
-> **The cluster grows.** Start with Machines A + B. Add Machine C when you're ready. Add a fourth machine (that GTX 770 you haven't thrown out yet) whenever. Each new node contributes without disrupting the existing setup. Tightwad doesn't care what generation or vendor the hardware is from.
+> **The cluster grows.** Start with Machines A + B. Add Machine C when you're ready. Add a fourth machine (that GTX 770 you haven't thrown out yet) whenever. Each new node contributes without disrupting the existing setup — just add it to `cluster.yaml` or re-run `tightwad init`. Tightwad doesn't care what generation or vendor the hardware is from. CUDA, ROCm, Metal, CPU-only — it all pools together. The only thing that matters is that your draft and target models share the same family.
 
 > **Note on the bigger picture:** With Qwen3-8B drafting for Qwen3.5-397B (via API), we've seen 80% acceptance after whitespace normalization — meaning 4 in 5 tokens come from your local GPU, not the cloud. Reasoning tasks hit 88%. The bigger the gap between draft and target quality, the more you save.
 
 ## Configuration
 
-Edit `configs/cluster.yaml`:
+Edit `configs/cluster.yaml` (or generate one with `tightwad init`):
 
 ```yaml
+# ⚠️  Replace all IPs and model paths below with your own values.
+# Find your IPs: ip addr (Linux), ipconfig (Windows), ipconfig getifaddr en0 (macOS)
+
 # Speculative decoding proxy
 proxy:
   host: 0.0.0.0
@@ -411,11 +416,11 @@ proxy:
   max_draft_tokens: 32              # Sweet spot for cross-machine (reduces HTTP round trips)
   fallback_on_draft_failure: true
   draft:
-    url: http://192.168.1.50:8081    # llama-server on a cheap GPU
+    url: http://192.168.1.50:8081    # ← your draft machine's IP + port
     model_name: qwen3-8b
     backend: llamacpp                  # or "ollama"
   target:
-    url: http://192.168.1.100:8080   # Bigger GPU
+    url: http://192.168.1.100:8080   # ← your target machine's IP + port
     model_name: qwen3-32b
     backend: llamacpp
 
@@ -432,12 +437,12 @@ coordinator:
       vram_gb: 12
 
 workers:                 # Remote machines running rpc-server
-  - host: 192.168.1.20   # Each worker exposes GPUs via rpc-server
+  - host: 192.168.1.20   # ← your worker's IP
     gpus:
       - name: "RTX 2070"
         vram_gb: 8
         rpc_port: 50052
-  - host: 192.168.1.30
+  - host: 192.168.1.30   # ← your worker's IP
     gpus:
       - name: "Apple M2 Metal"
         vram_gb: 11       # Use recommendedMaxWorkingSetSize, not total unified memory
@@ -445,7 +450,7 @@ workers:                 # Remote machines running rpc-server
 
 models:
   qwen3-32b:
-    path: /models/Qwen3-32B-Q4_K_M.gguf
+    path: /models/Qwen3-32B-Q4_K_M.gguf  # ← absolute path on coordinator machine
     ctx_size: 8192
     flash_attn: true
     default: true
@@ -606,6 +611,46 @@ RPC pooling is only useful when the model doesn't fit on one machine. When it do
 - **Multi-drafter parallelism:** Multiple CPUs each run a draft model in parallel, the GPU target picks the best candidate
 - **Legacy GPU revival:** A 12-year-old GPU with 2GB VRAM can run Qwen3-1.7B as a draft model for a 72B target — turning e-waste into productive infrastructure
 - **Junk drawer inference:** Pool ALL your hardware — CUDA, ROCm, Metal, CPU — into one endpoint. The speculative proxy handles the coordination. No GPU left behind
+
+## Swarm Transfer — P2P Model Distribution
+
+When you need to get a 40 GB model onto 5 worker machines, rsync from one source = 200 GB of outbound transfer. Swarm transfer splits the model into 64 MB pieces with SHA256 hashes and lets workers pull from **any peer** that has pieces — including each other.
+
+```
+rsync (single-source):                swarm (P2P):
+
+  Source ──► Worker 1 (40 GB)           Source ──► Worker 1 ──► Worker 3
+  Source ──► Worker 2 (40 GB)           Source ──► Worker 2 ──► Worker 4
+  Source ──► Worker 3 (40 GB)           Worker 1 ──► Worker 5
+  Source ──► Worker 4 (40 GB)           Worker 2 ──► Worker 5
+  Source ──► Worker 5 (40 GB)
+  Total: 200 GB from source            Total: ~80 GB from source (peers share the rest)
+```
+
+| | rsync (`tightwad distribute`) | swarm (`tightwad swarm`) |
+|---|---|---|
+| **Transfer pattern** | Single source → each worker | Any peer → any peer |
+| **Source bandwidth** | O(N × model_size) | O(model_size) |
+| **Resume on interrupt** | Restart from beginning | Continue from last piece |
+| **Integrity** | Trust the network | SHA256 per piece |
+| **Best for** | 1-2 workers, small models | 3+ workers, large models |
+
+```bash
+# On the source machine
+tightwad manifest create ~/models/Qwen3-32B-Q4_K_M.gguf
+tightwad swarm seed ~/models/Qwen3-32B-Q4_K_M.gguf
+
+# On each worker (can pull from source + other workers)
+tightwad swarm pull ~/models/Qwen3-32B-Q4_K_M.gguf \
+  --manifest http://192.168.1.10:9080/manifest \
+  --peer http://192.168.1.10:9080 \
+  --peer http://192.168.1.20:9080   # worker 1 also seeds
+
+# Check progress
+tightwad swarm status ~/models/Qwen3-32B-Q4_K_M.gguf
+```
+
+See the [Swarm Transfer wiki page](https://github.com/akivasolutions/tightwad/wiki/Swarm-Transfer) for full architecture, rarest-first piece selection, and bitfield tracking details.
 
 ## Why Tightwad?
 
