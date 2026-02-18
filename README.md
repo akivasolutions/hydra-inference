@@ -140,6 +140,7 @@ All `TIGHTWAD_*` env vars:
 | `TIGHTWAD_HOST` | `0.0.0.0` | Proxy bind host |
 | `TIGHTWAD_MAX_DRAFT_TOKENS` | `32` | Tokens per draft round |
 | `TIGHTWAD_PROXY_TOKEN` | *(unset)* | Bearer token for proxy API auth (recommended) |
+| `TIGHTWAD_ALLOW_PRIVATE_UPSTREAM` | `true` | SSRF: `false` = block private/LAN upstream IPs |
 
 ### Proxy Authentication
 
@@ -184,6 +185,49 @@ curl http://localhost:8088/v1/chat/completions \
 If no token is configured the proxy operates in open (unauthenticated) mode
 for backward compatibility, but logs a **security warning** on startup.
 `TIGHTWAD_TOKEN` (the swarm seeder token) is also accepted as a fallback alias.
+
+### SSRF Protection (upstream URL validation)
+
+Tightwad validates all upstream URLs before opening connections (audit ref: SEC-5).
+
+**What is always enforced:**
+- **Scheme allowlist** — only `http://` and `https://` are accepted. `file://`, `gopher://`, `ftp://`, and every other scheme are rejected with a clear error.
+
+**What is enforced when `allow_private_upstream: false`:**
+- **Private/internal IP blocking** — requests to RFC-1918 ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`), link-local / IMDS (`169.254.0.0/16`), and IPv6 equivalents (`::1`, `fc00::/7`, `fe80::/10`) are blocked.
+- **DNS-rebinding protection** — hostnames are resolved via DNS and the resolved IPs are also checked, so a domain that resolves to an internal address is caught even if the URL looks public.
+
+**Homelab default (`allow_private_upstream: true`):**
+
+Because Tightwad's most common use case targets LAN servers, the private-IP check **defaults to allowed**. The scheme check is still always enforced.
+
+```yaml
+proxy:
+  # Default: LAN/loopback targets are fine (common homelab setup)
+  allow_private_upstream: true   # omit or set true for home/LAN use
+
+  # Strict mode: useful in cloud or multi-tenant environments
+  # allow_private_upstream: false
+
+  draft:
+    url: http://192.168.1.101:11434   # OK in default mode
+    model_name: qwen3-1.7b
+  target:
+    url: http://192.168.1.100:8080
+    model_name: qwen3-32b
+```
+
+**Via environment variable:**
+
+```bash
+# Strict mode (block private/internal targets)
+export TIGHTWAD_ALLOW_PRIVATE_UPSTREAM=false
+
+# Homelab mode (default)
+export TIGHTWAD_ALLOW_PRIVATE_UPSTREAM=true   # or omit entirely
+```
+
+If a URL fails validation the proxy refuses to start and prints a clear error explaining why and how to fix it.
 
 ## Quick Start
 
