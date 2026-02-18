@@ -428,24 +428,23 @@ Same-family (Qwen3-8B → Qwen3-32B, local Ollama):
 | Creative    | 39%            | 6      | Lowest — many valid outputs |
 | **Average** | **63.8%**      | 25.6   | |
 
-#### Same-Family, Cloud (Llama 3.1 8B → Llama 3.1 405B, OpenRouter)
+#### Cloud API Benchmarks (OpenRouter)
 
-| Category | Acceptance | Notes |
-|----------|:----------:|-------|
-| Code | 37.7% | Deterministic output matches well |
-| Reasoning | 23.8% | Step-by-step math overlaps |
-| List | 15.4% | Formatting varies |
-| Factual | 12.6% | Phrasing diverges at scale |
-| Creative | 3.1% | Nearly no overlap |
-| **Overall** | **18.9%** | Network latency negates wall-clock speedup |
+| Draft | Target | Size Gap | Acceptance |
+|-------|--------|:--------:|:----------:|
+| Llama 3.1 8B | Llama 3.1 405B | 50x | **18.9%** |
+| Qwen3 1.7B | Qwen3.5 397B | 233x | **10.8%** |
+| Llama 3.1 8B | Llama 3.1 70B | 9x | **9.9%** |
+| Qwen3 1.7B | Qwen3 235B | 138x | **6.6%** |
+| Qwen3 8B | Llama 3.3 70B | cross-family | **~3%** |
 
-> **Important:** Over cloud APIs, the per-round network latency (~3-8s per API call) makes speculative decoding *slower* than baseline despite positive acceptance rates. Spec decoding shines when both models are local or very low-latency. For cloud targets, the value is in reducing API calls (cost savings), not wall-clock speedup.
+> **Important:** Over cloud APIs, the per-round network latency (~3-8s per API call) makes speculative decoding *slower* than baseline despite positive acceptance rates. Spec decoding shines when both models are local or very low-latency.
 
-#### Cross-Family (Qwen3-8B → Llama 3.3 70B, OpenRouter)
-
-| **Average** | **~3%** | Nearly zero — different tokenizers and training data |
-
-**Key finding:** Same-family drafting is critical. An 8B model from the same family as the target achieves 73% acceptance with logprobs, while cross-family drops to ~3%.
+**Key findings:**
+- Same-family drafting is critical — cross-family drops to ~3% regardless of model size
+- Draft model size matters — the 1.7B is too small to predict 200B+ target phrasing
+- Larger targets don't always mean lower acceptance (405B beat 70B with the same 8B draft)
+- Cloud API latency negates wall-clock speedup even with decent acceptance rates
 
 #### CPU Draft Results (Qwen3-1.7B CPU → Qwen3-32B GPU)
 

@@ -78,33 +78,58 @@ def qwen3_template(messages: list[dict], partial: str = "") -> str:
 
 
 CONFIGS = {
-    # Qwen3 family
-    "qwen3-235b": {
+    # --- Qwen3 family ---
+    "qwen3-1.7b-235b": {
         "name": "Qwen3-1.7B → Qwen3-235B-A22B (OpenRouter)",
         "draft_model": "Qwen3-1.7B",
         "draft_gguf": "~/models/Qwen3-1.7B-Q8_0.gguf",
         "draft_url": "http://127.0.0.1:8081",
+        "draft_backend": "llamacpp",
         "target_model": "qwen/qwen3-235b-a22b",
         "template": qwen3_template,
         "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
         "system_message": "You are a helpful assistant. /no_think",
     },
-    "qwen3.5-397b": {
+    "qwen3-1.7b-397b": {
         "name": "Qwen3-1.7B → Qwen3.5-397B-A17B (OpenRouter)",
         "draft_model": "Qwen3-1.7B",
         "draft_gguf": "~/models/Qwen3-1.7B-Q8_0.gguf",
         "draft_url": "http://127.0.0.1:8081",
+        "draft_backend": "llamacpp",
         "target_model": "qwen/qwen3.5-397b-a17b",
         "template": qwen3_template,
         "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
         "system_message": "You are a helpful assistant. /no_think",
     },
-    # Llama 3.1 family
+    "qwen3-8b-235b": {
+        "name": "Qwen3-8B → Qwen3-235B-A22B (OpenRouter)",
+        "draft_model": "qwen3:8b",
+        "draft_gguf": "(Ollama on 2070)",
+        "draft_url": "http://192.168.1.101:11434",
+        "draft_backend": "ollama",
+        "target_model": "qwen/qwen3-235b-a22b",
+        "template": qwen3_template,
+        "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
+        "system_message": "You are a helpful assistant. /no_think",
+    },
+    "qwen3-8b-397b": {
+        "name": "Qwen3-8B → Qwen3.5-397B-A17B (OpenRouter)",
+        "draft_model": "qwen3:8b",
+        "draft_gguf": "(Ollama on 2070)",
+        "draft_url": "http://192.168.1.101:11434",
+        "draft_backend": "ollama",
+        "target_model": "qwen/qwen3.5-397b-a17b",
+        "template": qwen3_template,
+        "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
+        "system_message": "You are a helpful assistant. /no_think",
+    },
+    # --- Llama 3.1 family ---
     "llama-70b": {
         "name": "Llama-3.1-8B → Llama-3.1-70B (OpenRouter)",
         "draft_model": "Meta-Llama-3.1-8B-Instruct",
         "draft_gguf": "~/models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         "draft_url": "http://127.0.0.1:8081",
+        "draft_backend": "llamacpp",
         "target_model": "meta-llama/llama-3.1-70b-instruct",
         "template": llama_template,
         "stop_tokens": ["<|eot_id|>", "<|end_of_text|>"],
@@ -114,9 +139,34 @@ CONFIGS = {
         "draft_model": "Meta-Llama-3.1-8B-Instruct",
         "draft_gguf": "~/models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         "draft_url": "http://127.0.0.1:8081",
+        "draft_backend": "llamacpp",
         "target_model": "meta-llama/llama-3.1-405b-instruct",
         "template": llama_template,
         "stop_tokens": ["<|eot_id|>", "<|end_of_text|>"],
+    },
+    # --- DeepSeek R1 family ---
+    # R1 distills are Qwen-architecture but trained to mimic R1 output
+    "deepseek-r1-8b": {
+        "name": "DeepSeek-R1-Distill-8B → DeepSeek-R1 (OpenRouter)",
+        "draft_model": "deepseek-r1:8b",
+        "draft_gguf": "(Ollama on M2 Mac)",
+        "draft_url": "http://192.168.1.102:11434",
+        "draft_backend": "ollama",
+        "target_model": "deepseek/deepseek-r1-0528:free",
+        "template": qwen3_template,
+        "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
+        "system_message": None,  # R1 uses thinking by design
+    },
+    "deepseek-r1-14b": {
+        "name": "DeepSeek-R1-Distill-14B → DeepSeek-R1 (OpenRouter)",
+        "draft_model": "deepseek-r1:14b",
+        "draft_gguf": "(Ollama on 2070)",
+        "draft_url": "http://192.168.1.101:11434",
+        "draft_backend": "ollama",
+        "target_model": "deepseek/deepseek-r1-0528:free",
+        "template": qwen3_template,
+        "stop_tokens": ["<|im_end|>", "<|endoftext|>"],
+        "system_message": None,  # R1 uses thinking by design
     },
 }
 
