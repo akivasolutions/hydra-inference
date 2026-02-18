@@ -12,6 +12,7 @@ from rich.table import Table
 
 from . import coordinator, worker
 from .config import load_config
+from . import doctor as doctor_mod
 from . import proxy as proxy_mod
 from . import manifest as manifest_mod
 from . import swarm_transfer as swarm_mod
@@ -196,6 +197,23 @@ def benchmark(ctx):
     table.add_row("Prompt processing", f"~{pp_speed:.0f} tok/s")
     table.add_row("Generation", f"~{tg_speed:.1f} tok/s")
     console.print(table)
+
+
+@cli.command()
+@click.option("--fix", is_flag=True, help="Show suggested fix commands for failures")
+@click.option("--json", "as_json", is_flag=True, help="Output machine-readable JSON report")
+@click.pass_context
+def doctor(ctx, fix, as_json):
+    """Diagnose cluster configuration, connectivity, and version issues."""
+    report = doctor_mod.run_doctor(ctx.obj.get("config_path"))
+
+    if as_json:
+        click.echo(json.dumps(report.to_dict(), indent=2))
+    else:
+        doctor_mod.render_report(console, report, show_fix=fix)
+
+    if not report.passed:
+        sys.exit(1)
 
 
 # --- Proxy subcommand group ---

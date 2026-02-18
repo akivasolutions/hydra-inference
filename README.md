@@ -115,6 +115,10 @@ pip install -e .
 
 # Edit topology for your hardware
 vim configs/cluster.yaml
+
+# Verify your setup
+tightwad doctor        # check config, binaries, network, versions
+tightwad doctor --fix  # show fix suggestions for any issues
 ```
 
 ### Speculative Decoding Proxy
@@ -582,6 +586,9 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | `tightwad start [-m MODEL]` | Start RPC coordinator |
 | `tightwad stop` | Stop the coordinator |
 | `tightwad swap MODEL` | Hot-swap model (workers persist) |
+| `tightwad doctor` | Diagnose config, connectivity, binaries, and version issues |
+| `tightwad doctor --fix` | Show suggested fix commands for failures/warnings |
+| `tightwad doctor --json` | Machine-readable JSON diagnostic report |
 | `tightwad benchmark` | Benchmark the running coordinator |
 | `tightwad inspect <model.gguf>` | Show GGUF model info (arch, layers, sizes) |
 | `tightwad inspect <model.gguf> --plan` | Show distribution plan for current cluster |
@@ -685,7 +692,8 @@ pytest tests/ -v
 ```
 tightwad/
 ├── config.py        # YAML config loader (cluster + proxy)
-├── cli.py           # Click CLI (cluster + proxy + inspect + distribute)
+├── cli.py           # Click CLI (cluster + proxy + inspect + distribute + doctor)
+├── doctor.py        # Diagnostic checks (config, binaries, network, versions)
 ├── coordinator.py   # llama-server lifecycle management
 ├── worker.py        # RPC worker health checks
 ├── proxy.py         # Speculative decoding proxy server
@@ -708,6 +716,7 @@ tests/
 ├── test_proxy.py
 ├── test_inspect.py
 ├── test_distribute.py
+├── test_doctor.py
 └── test_swarm.py
 configs/
 ├── cluster.yaml              # Hardware topology + proxy config
