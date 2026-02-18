@@ -10,12 +10,17 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from pathlib import Path
+
 from . import coordinator, worker
 from .config import load_config
+from .coordinator import LOGDIR, COORDINATOR_LOG
 from . import doctor as doctor_mod
 from . import proxy as proxy_mod
 from . import manifest as manifest_mod
 from . import swarm_transfer as swarm_mod
+
+PROXY_LOG = LOGDIR / "proxy.log"
 
 console = Console()
 
@@ -87,6 +92,45 @@ def stop():
         console.print("[green]Coordinator stopped.[/green]")
     else:
         console.print("[yellow]Coordinator was not running.[/yellow]")
+
+
+@cli.command()
+@click.argument("service", default="coordinator", type=click.Choice(["coordinator", "proxy"]))
+@click.option("-f", "--follow", is_flag=True, help="Live-tail the log (like tail -f)")
+@click.option("--clear", is_flag=True, help="Truncate log files")
+@click.option("-n", "--lines", default=50, help="Number of lines to show (default: 50)")
+def logs(service, follow, clear, lines):
+    """View coordinator or proxy logs."""
+    log_file = COORDINATOR_LOG if service == "coordinator" else PROXY_LOG
+
+    if clear:
+        for lf in [COORDINATOR_LOG, PROXY_LOG]:
+            if lf.exists():
+                lf.write_text("")
+        console.print("[green]Logs cleared.[/green]")
+        return
+
+    if not log_file.exists():
+        console.print(f"[dim]No log file yet: {log_file}[/dim]")
+        console.print(f"[dim]Start the {service} to generate logs.[/dim]")
+        return
+
+    if follow:
+        import subprocess as sp
+        try:
+            sp.run(["tail", "-f", str(log_file)])
+        except KeyboardInterrupt:
+            pass
+        return
+
+    # Show last N lines
+    text = log_file.read_text()
+    tail = text.splitlines()[-lines:]
+    if not tail:
+        console.print("[dim]Log file is empty.[/dim]")
+    else:
+        for line in tail:
+            console.print(line, highlight=False)
 
 
 @cli.command()
@@ -260,10 +304,38 @@ def proxy_start(ctx):
     console.print(f"  Listening on: {pc.host}:{pc.port}")
 
     import uvicorn
+    LOGDIR.mkdir(parents=True, exist_ok=True)
+    log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "fmt": "%(asctime)s %(levelname)s %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            },
+        },
+        "handlers": {
+            "file": {
+                "class": "logging.FileHandler",
+                "filename": str(PROXY_LOG),
+                "mode": "a",
+                "formatter": "default",
+            },
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "default",
+            },
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["console", "file"], "level": "INFO"},
+            "uvicorn.error": {"handlers": ["console", "file"], "level": "INFO"},
+            "uvicorn.access": {"handlers": ["console", "file"], "level": "INFO"},
+        },
+    }
     app = proxy_mod.create_app(pc)
     proxy_mod.write_pidfile()
     try:
-        uvicorn.run(app, host=pc.host, port=pc.port, log_level="info")
+        uvicorn.run(app, host=pc.host, port=pc.port, log_level="info", log_config=log_config)
     finally:
         proxy_mod.remove_pidfile()
 
@@ -434,6 +506,8 @@ def chat(ctx, direct):
         console.print(f"\n[bold]Speculative mode:[/bold] proxy @ :{pc.port} -> {pc.target.model_name}")
     console.print("[dim]Type your message and press Enter. Ctrl+C to quit.[/dim]\n")
     messages: list[dict] = []
+    prev_stats: dict | None = None
+    status_url = f"{base_url}/v1/tightwad/status" if not direct else None
     while True:
         try:
             user_input = console.input("[bold green]You:[/bold green] ")
@@ -444,17 +518,43 @@ def chat(ctx, direct):
             continue
         messages.append({"role": "user", "content": user_input})
         try:
+            import time as _time
             url = f"{base_url}/v1/chat/completions"
             body = {"messages": messages, "max_tokens": 1024, "temperature": 0.0, "stream": False}
+            t0 = _time.monotonic()
             with httpx.Client(timeout=120.0) as client:
                 resp = client.post(url, json=body)
                 resp.raise_for_status()
                 data = resp.json()
+            elapsed = _time.monotonic() - t0
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             if not text:
                 text = data.get("choices", [{}])[0].get("text", "")
-            console.print(f"[bold cyan]AI:[/bold cyan] {text}\n")
+            console.print(f"[bold cyan]AI:[/bold cyan] {text}")
             messages.append({"role": "assistant", "content": text})
+
+            # Inline speculation stats (speculative mode only)
+            if status_url:
+                try:
+                    sr = httpx.get(status_url, timeout=3.0)
+                    cur = sr.json().get("stats", {})
+                    if prev_stats and cur.get("total_rounds", 0) > prev_stats.get("total_rounds", 0):
+                        dr = cur["total_rounds"] - prev_stats["total_rounds"]
+                        dd = cur["total_drafted"] - prev_stats["total_drafted"]
+                        da = cur["total_accepted"] - prev_stats["total_accepted"]
+                        rate = da / dd * 100 if dd > 0 else 0
+                        tpr = da / dr if dr > 0 else 0
+                        tok_s = da / elapsed if elapsed > 0 else 0
+                        console.print(
+                            f"  [dim]↳ {dr} round{'s' if dr != 1 else ''}, "
+                            f"{dd} drafted, {da} accepted ({rate:.1f}%), "
+                            f"{tpr:.1f} tok/round, {tok_s:.1f} tok/s[/dim]"
+                        )
+                    prev_stats = cur
+                except Exception:
+                    pass
+
+            console.print()
         except KeyboardInterrupt:
             console.print("\n[dim]Interrupted.[/dim]\n")
             messages.pop()

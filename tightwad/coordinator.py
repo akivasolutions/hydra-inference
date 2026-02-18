@@ -12,6 +12,8 @@ from .config import ClusterConfig, ModelConfig
 from .worker import check_all_workers, check_coordinator_health, wait_for_workers
 
 PIDFILE = Path.home() / ".tightwad" / "coordinator.pid"
+LOGDIR = Path.home() / ".tightwad" / "logs"
+COORDINATOR_LOG = LOGDIR / "coordinator.log"
 
 
 def build_server_args(config: ClusterConfig, model: ModelConfig) -> list[str]:
@@ -85,11 +87,13 @@ def start(config: ClusterConfig, model_name: str | None = None) -> int:
     # Build and launch
     args = build_server_args(config, model)
     PIDFILE.parent.mkdir(parents=True, exist_ok=True)
+    LOGDIR.mkdir(parents=True, exist_ok=True)
 
+    log_fh = open(COORDINATOR_LOG, "a")
     proc = subprocess.Popen(
         args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_fh,
+        stderr=log_fh,
     )
     PIDFILE.write_text(str(proc.pid))
 

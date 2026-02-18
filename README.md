@@ -151,6 +151,10 @@ tightwad status
 # Start (after rpc-server instances are running on workers)
 tightwad start
 
+# View coordinator logs
+tightwad logs              # last 50 lines
+tightwad logs -f           # live tail
+
 # Hot-swap to a different model (RPC workers persist)
 tightwad swap deepseek-r1-70b
 
@@ -580,13 +584,16 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | `tightwad proxy start` | Start speculative decoding proxy |
 | `tightwad proxy stop` | Stop the proxy |
 | `tightwad proxy status` | Show draft/target health + acceptance rate stats |
-| `tightwad chat` | Interactive chat via proxy (browser UI also at `http://localhost:8088`) |
+| `tightwad chat` | Interactive chat via proxy with inline speculation stats |
 | `tightwad chat --direct` | Chat directly with target (bypass proxy, for A/B comparison) |
+| `tightwad logs [coordinator\|proxy]` | View coordinator or proxy logs (last 50 lines) |
+| `tightwad logs -f` | Live-tail logs (`tail -f` style) |
+| `tightwad logs --clear` | Truncate all log files |
 | `tightwad status` | Show RPC cluster status |
 | `tightwad start [-m MODEL]` | Start RPC coordinator |
 | `tightwad stop` | Stop the coordinator |
 | `tightwad swap MODEL` | Hot-swap model (workers persist) |
-| `tightwad doctor` | Diagnose config, connectivity, binaries, and version issues |
+| `tightwad doctor` | Diagnose config, connectivity, binaries, versions, and config validation |
 | `tightwad doctor --fix` | Show suggested fix commands for failures/warnings |
 | `tightwad doctor --json` | Machine-readable JSON diagnostic report |
 | `tightwad benchmark` | Benchmark the running coordinator |
@@ -692,7 +699,7 @@ pytest tests/ -v
 ```
 tightwad/
 ├── config.py        # YAML config loader (cluster + proxy)
-├── cli.py           # Click CLI (cluster + proxy + inspect + distribute + doctor)
+├── cli.py           # Click CLI (cluster + proxy + inspect + distribute + doctor + logs)
 ├── doctor.py        # Diagnostic checks (config, binaries, network, versions)
 ├── coordinator.py   # llama-server lifecycle management
 ├── worker.py        # RPC worker health checks

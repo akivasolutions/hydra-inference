@@ -162,7 +162,102 @@ def check_config(config_path: str | Path | None) -> tuple[Section, ClusterConfig
             detail=f"{len(config.workers)} worker(s), {gpu_count} remote GPU(s)",
         ))
 
+    # Structural validation on the parsed config
+    _validate_config(section, config)
+
     return section, config
+
+
+def _validate_config(section: Section, config: ClusterConfig) -> None:
+    """Add structural validation checks to the config section."""
+    from urllib.parse import urlparse
+
+    # Port range checks
+    def _check_port(name: str, port: int) -> None:
+        if not (1 <= port <= 65535):
+            section.results.append(CheckResult(
+                name=f"Port range: {name}",
+                status=Status.WARN,
+                detail=f"{port} is outside valid range 1-65535",
+                fix=f"Set {name} to a port between 1 and 65535",
+            ))
+
+    _check_port("coordinator_port", config.coordinator_port)
+    for w in config.workers:
+        for gpu in w.gpus:
+            if gpu.rpc_port is not None:
+                _check_port(f"rpc_port ({w.host}/{gpu.name})", gpu.rpc_port)
+    if config.proxy:
+        _check_port("proxy.port", config.proxy.port)
+
+    # VRAM positive
+    for gpu in config.all_gpus:
+        if gpu.vram_gb <= 0:
+            section.results.append(CheckResult(
+                name=f"VRAM positive: {gpu.name}",
+                status=Status.WARN,
+                detail=f"vram_gb={gpu.vram_gb} — must be > 0",
+                fix=f"Set vram_gb to the actual VRAM size for {gpu.name}",
+            ))
+
+    # Coordinator binary not empty
+    if not config.coordinator_binary.strip():
+        section.results.append(CheckResult(
+            name="Coordinator binary",
+            status=Status.WARN,
+            detail="Empty string",
+            fix="Set binaries.coordinator to 'llama-server' or an absolute path",
+        ))
+
+    # Proxy URL validation
+    if config.proxy:
+        for label, endpoint in [("proxy.draft", config.proxy.draft), ("proxy.target", config.proxy.target)]:
+            parsed = urlparse(endpoint.url)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                section.results.append(CheckResult(
+                    name=f"URL valid: {label}",
+                    status=Status.WARN,
+                    detail=f"'{endpoint.url}' is not a valid http(s) URL",
+                    fix=f"Set {label}.url to a valid URL like http://host:port",
+                ))
+
+        # Backend enum
+        valid_backends = {"llamacpp", "ollama"}
+        for label, endpoint in [("proxy.draft", config.proxy.draft), ("proxy.target", config.proxy.target)]:
+            if endpoint.backend not in valid_backends:
+                section.results.append(CheckResult(
+                    name=f"Backend valid: {label}",
+                    status=Status.WARN,
+                    detail=f"'{endpoint.backend}' — expected one of {valid_backends}",
+                    fix=f"Set {label}.backend to 'llamacpp' or 'ollama'",
+                ))
+
+        # max_draft_tokens range
+        mdt = config.proxy.max_draft_tokens
+        if not (1 <= mdt <= 256):
+            section.results.append(CheckResult(
+                name="max_draft_tokens range",
+                status=Status.WARN,
+                detail=f"{mdt} is outside range 1-256",
+                fix="Set proxy.max_draft_tokens between 1 and 256",
+            ))
+
+    # Duplicate RPC addresses
+    seen: dict[str, str] = {}
+    for w in config.workers:
+        for gpu in w.gpus:
+            if gpu.rpc_port is None:
+                continue
+            addr = f"{w.host}:{gpu.rpc_port}"
+            if addr in seen:
+                section.results.append(CheckResult(
+                    name="Duplicate RPC address",
+                    status=Status.WARN,
+                    detail=f"{addr} used by both {seen[addr]} and {gpu.name}",
+                    fix="Each RPC worker needs a unique host:port",
+                ))
+            else:
+                seen[addr] = gpu.name
 
 
 def check_binaries(config: ClusterConfig) -> Section:
