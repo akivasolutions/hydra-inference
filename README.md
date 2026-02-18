@@ -104,6 +104,39 @@ Client (OpenAI API)
 
 **Why not just use RPC?** RPC ships 100-300 MB of tensor data per step over the network. The speculative proxy ships token IDs (bytes). For models that fit on a single machine's VRAM, speculation is dramatically faster.
 
+## Docker Quick Start
+
+The fastest way to get a speculative decoding proxy running. No config files needed — just set your draft and target server URLs:
+
+```bash
+# One-liner with Docker
+docker run --rm --network host \
+  -e TIGHTWAD_DRAFT_URL=http://192.168.1.10:11434 \
+  -e TIGHTWAD_DRAFT_MODEL=qwen3:8b \
+  -e TIGHTWAD_TARGET_URL=http://192.168.1.20:11434 \
+  -e TIGHTWAD_TARGET_MODEL=qwen3:32b \
+  ghcr.io/akivasolutions/tightwad
+
+# Or with Docker Compose (edit docker-compose.yml with your IPs first)
+docker compose up
+```
+
+> **Mac/Docker Desktop:** Replace `--network host` with `-p 8088:8088` and use `host.docker.internal` instead of LAN IPs.
+
+All `TIGHTWAD_*` env vars:
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `TIGHTWAD_DRAFT_URL` | *required* | Draft server URL |
+| `TIGHTWAD_DRAFT_MODEL` | `draft` | Draft model name |
+| `TIGHTWAD_DRAFT_BACKEND` | `ollama` | `ollama` or `llamacpp` |
+| `TIGHTWAD_TARGET_URL` | *required* | Target server URL |
+| `TIGHTWAD_TARGET_MODEL` | `target` | Target model name |
+| `TIGHTWAD_TARGET_BACKEND` | `ollama` | `ollama` or `llamacpp` |
+| `TIGHTWAD_PORT` | `8088` | Proxy listen port |
+| `TIGHTWAD_HOST` | `0.0.0.0` | Proxy bind host |
+| `TIGHTWAD_MAX_DRAFT_TOKENS` | `32` | Tokens per draft round |
+
 ## Quick Start
 
 ```bash
@@ -113,7 +146,10 @@ cd tightwad
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# Edit topology for your hardware
+# Auto-discover LAN servers and generate config
+tightwad init
+
+# Or edit topology manually
 vim configs/cluster.yaml
 
 # Verify your setup
@@ -223,9 +259,43 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-### Step 5 — Edit `configs/cluster.yaml`
+### Step 5 — Generate config
 
-Start with two machines (A + B), then add C:
+**Option A: Auto-discover with `tightwad init` (recommended)**
+
+```bash
+tightwad init
+# Scans your LAN for Ollama and llama-server instances
+# Shows a table of discovered servers
+# You pick target (big model) and draft (small model) by number
+# Writes configs/cluster.yaml automatically
+```
+
+Example output:
+```
+Scanning LAN for inference servers...
+
+          Discovered Servers (192.168.1.0/24)
+┏━━━┳━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ # ┃ Host          ┃ Port  ┃ Backend ┃ Models     ┃ Status  ┃
+┡━━━╇━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━┩
+│ 1 │ 192.168.1.10  │ 11434 │ ollama  │ qwen3:32b  │ healthy │
+│ 2 │ 192.168.1.20  │ 11434 │ ollama  │ qwen3:8b   │ healthy │
+└───┴───────────────┴───────┴─────────┴────────────┴─────────┘
+
+Select TARGET server (big model): 1
+Select DRAFT server (small fast model): 2
+Write to configs/cluster.yaml? [Y/n] y
+```
+
+If your subnet isn't auto-detected correctly, specify it manually:
+```bash
+tightwad init --subnet 192.168.1.0/24
+```
+
+**Option B: Manual config**
+
+Edit `configs/cluster.yaml` directly:
 
 ```yaml
 proxy:
@@ -243,17 +313,30 @@ proxy:
     backend: ollama
 ```
 
+Replace all IPs with your actual machine IPs (`ip addr` on Linux, `ipconfig` on Windows).
+
+**Option C: Docker (no config file at all)**
+
+Skip config entirely and use environment variables:
+
+```bash
+docker run --rm --network host \
+  -e TIGHTWAD_DRAFT_URL=http://192.168.1.20:11434 \
+  -e TIGHTWAD_DRAFT_MODEL=qwen3:8b \
+  -e TIGHTWAD_TARGET_URL=http://192.168.1.10:11434 \
+  -e TIGHTWAD_TARGET_MODEL=qwen3:32b \
+  ghcr.io/akivasolutions/tightwad
+```
+
 **Adding Machine C later** (CPU draft as fallback or parallel drafter):
 
 ```yaml
-  # Add a second draft source when you're ready:
+  # Add to configs/cluster.yaml:
   draft_fallback:
     url: http://192.168.1.30:8081     # Machine C (CPU only) — replace with your IP
     model_name: qwen3:1.7b
     backend: llamacpp
 ```
-
-Replace all IPs with your actual machine IPs (`ip addr` on Linux, `ipconfig` on Windows).
 
 ### Step 6 — Start the proxy
 
@@ -581,6 +664,7 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 
 | Command | Description |
 |---------|-------------|
+| `tightwad init` | Auto-discover LAN servers and generate cluster.yaml |
 | `tightwad proxy start` | Start speculative decoding proxy |
 | `tightwad proxy stop` | Stop the proxy |
 | `tightwad proxy status` | Show draft/target health + acceptance rate stats |
@@ -706,6 +790,7 @@ tightwad/
 ├── proxy.py         # Speculative decoding proxy server
 ├── speculation.py   # Verification algorithm (pure logic)
 ├── gguf_inspect.py  # GGUF model analysis + distribution planning
+├── init_wizard.py   # LAN auto-discovery + interactive setup wizard
 ├── distribute.py    # rsync/scp model to workers in parallel
 ├── manifest.py      # Swarm manifest generation + bitfield tracking
 └── swarm_transfer.py # P2P seeder (Starlette) + puller (async httpx)
@@ -724,8 +809,11 @@ tests/
 ├── test_inspect.py
 ├── test_distribute.py
 ├── test_doctor.py
-└── test_swarm.py
+├── test_swarm.py
+└── test_init_wizard.py
 configs/
 ├── cluster.yaml              # Hardware topology + proxy config
 └── cluster-unraid-coord.yaml # Unraid coordinator (128GB RAM, 70B+ models)
+Dockerfile                     # Proxy-only container image
+docker-compose.yml             # One-command proxy deployment
 ```

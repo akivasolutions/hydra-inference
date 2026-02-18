@@ -103,11 +103,55 @@ class ClusterConfig:
         return next(iter(self.models.values()), None)
 
 
+def load_proxy_from_env() -> ProxyConfig | None:
+    """Build a ProxyConfig from TIGHTWAD_* environment variables.
+
+    Returns None if required env vars (TIGHTWAD_DRAFT_URL, TIGHTWAD_TARGET_URL)
+    are not set.
+    """
+    draft_url = os.environ.get("TIGHTWAD_DRAFT_URL")
+    target_url = os.environ.get("TIGHTWAD_TARGET_URL")
+    if not draft_url or not target_url:
+        return None
+
+    return ProxyConfig(
+        draft=ServerEndpoint(
+            url=draft_url,
+            model_name=os.environ.get("TIGHTWAD_DRAFT_MODEL", "draft"),
+            backend=os.environ.get("TIGHTWAD_DRAFT_BACKEND", "ollama"),
+        ),
+        target=ServerEndpoint(
+            url=target_url,
+            model_name=os.environ.get("TIGHTWAD_TARGET_MODEL", "target"),
+            backend=os.environ.get("TIGHTWAD_TARGET_BACKEND", "ollama"),
+        ),
+        host=os.environ.get("TIGHTWAD_HOST", "0.0.0.0"),
+        port=int(os.environ.get("TIGHTWAD_PORT", "8088")),
+        max_draft_tokens=int(os.environ.get("TIGHTWAD_MAX_DRAFT_TOKENS", "32")),
+    )
+
+
 def load_config(path: str | Path | None = None) -> ClusterConfig:
-    """Load cluster config from YAML file."""
+    """Load cluster config from YAML file, falling back to env vars for proxy-only mode."""
     config_path = Path(path) if path else Path(
         os.environ.get("TIGHTWAD_CONFIG", DEFAULT_CONFIG)
     )
+
+    if not config_path.exists():
+        proxy = load_proxy_from_env()
+        if proxy is not None:
+            return ClusterConfig(
+                coordinator_host="0.0.0.0",
+                coordinator_port=8080,
+                coordinator_backend="cuda",
+                coordinator_gpus=[],
+                workers=[],
+                models={},
+                coordinator_binary="llama-server",
+                rpc_server_binary="rpc-server",
+                proxy=proxy,
+            )
+        raise FileNotFoundError(f"Config file not found: {config_path}")
 
     with open(config_path) as f:
         raw = yaml.safe_load(f)

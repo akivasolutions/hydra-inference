@@ -19,6 +19,7 @@ from . import doctor as doctor_mod
 from . import proxy as proxy_mod
 from . import manifest as manifest_mod
 from . import swarm_transfer as swarm_mod
+from . import init_wizard
 
 PROXY_LOG = LOGDIR / "proxy.log"
 
@@ -41,6 +42,30 @@ def cli(ctx, config):
 
 def _load(ctx) -> "ClusterConfig":
     return load_config(ctx.obj.get("config_path"))
+
+
+@cli.command()
+@click.option("--subnet", default=None, help="Subnet to scan (e.g. 192.168.1.0/24, auto-detected if omitted)")
+@click.option("--port", "extra_ports", multiple=True, type=int, help="Additional ports to scan (repeatable)")
+@click.option("-o", "--output", default="configs/cluster.yaml", type=click.Path(), help="Output config path")
+def init(subnet, extra_ports, output):
+    """Auto-discover LAN inference servers and generate cluster.yaml."""
+    import asyncio
+
+    output_path = Path(output)
+    if output_path.exists():
+        overwrite = input(f"{output_path} already exists. Overwrite? [y/N] ").strip().lower()
+        if overwrite != "y":
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+    console.print("[bold]Scanning LAN for inference servers...[/bold]\n")
+    result = asyncio.run(init_wizard.scan_lan(
+        subnet=subnet,
+        extra_ports=list(extra_ports) if extra_ports else None,
+    ))
+
+    init_wizard.run_wizard(console, result, output_path)
 
 
 @cli.command()
