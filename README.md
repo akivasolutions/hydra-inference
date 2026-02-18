@@ -636,15 +636,18 @@ rsync (single-source):                swarm (P2P):
 | **Best for** | 1-2 workers, small models | 3+ workers, large models |
 
 ```bash
-# On the source machine
+# On the source machine (--token requires auth, --allowed-ips restricts by subnet)
 tightwad manifest create ~/models/Qwen3-32B-Q4_K_M.gguf
-tightwad swarm seed ~/models/Qwen3-32B-Q4_K_M.gguf
+tightwad swarm seed ~/models/Qwen3-32B-Q4_K_M.gguf \
+  --token mysecret \
+  --allowed-ips 192.168.1.0/24
 
 # On each worker (can pull from source + other workers)
 tightwad swarm pull ~/models/Qwen3-32B-Q4_K_M.gguf \
   --manifest http://192.168.1.10:9080/manifest \
   --peer http://192.168.1.10:9080 \
-  --peer http://192.168.1.20:9080   # worker 1 also seeds
+  --peer http://192.168.1.20:9080 \
+  --token mysecret
 
 # Check progress
 tightwad swarm status ~/models/Qwen3-32B-Q4_K_M.gguf
@@ -734,7 +737,9 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 | `tightwad distribute MODEL --dry-run` | Preview transfers without executing |
 | `tightwad manifest create <model.gguf>` | Generate swarm manifest (piece hashes) |
 | `tightwad swarm seed <model.gguf>` | Start P2P seeder for a model |
+| `tightwad swarm seed --token T --allowed-ips CIDR` | Seeder with Bearer auth and IP filtering |
 | `tightwad swarm pull <dest> --manifest <src> --peer <url>` | Pull model from swarm peers |
+| `tightwad swarm pull --token T` | Pull with Bearer auth for authenticated seeders |
 | `tightwad swarm status <model.gguf>` | Show swarm completion status |
 
 Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
