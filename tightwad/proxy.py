@@ -809,11 +809,37 @@ def apply_chat_template(messages: list[dict]) -> str:
 
 # --- Starlette app ---
 
+# Module-level singleton for the active proxy instance.
+#
+# Design note (CQ-3): This global is an intentional trade-off for simplicity —
+# the proxy is a heavyweight singleton (HTTP client pools, stats) that is only
+# ever created once per process by ``create_app()``.  A future refactor could
+# pass state through Starlette's ``request.state`` or a dependency-injection
+# container to support multiple instances per process.  For now:
+#   - ``reset_proxy_state()`` provides a reliable teardown path for tests.
+#   - ``create_app()`` raises ``RuntimeError`` if called a second time without
+#     resetting first to surface accidental re-initialization early.
 _proxy: SpeculativeProxy | None = None
 
 
+def reset_proxy_state() -> None:
+    """Reset the module-level proxy singleton to ``None``.
+
+    Call this in test teardown or before calling ``create_app()`` a second
+    time to prevent stale state from a previous call leaking into subsequent
+    requests.
+    """
+    global _proxy
+    _proxy = None
+
+
 def _get_proxy() -> SpeculativeProxy:
-    assert _proxy is not None, "Proxy not initialized"
+    """Return the active proxy, raising ``RuntimeError`` if not initialized.
+
+    Unlike ``assert``, this check is never stripped by the ``-O`` flag.
+    """
+    if _proxy is None:
+        raise RuntimeError("Proxy not initialized")
     return _proxy
 
 
@@ -1060,7 +1086,23 @@ async def handle_chat_ui(request: Request):
 
 
 def create_app(config: ProxyConfig) -> Starlette:
+    """Create and configure the proxy ASGI application.
+
+    .. note::
+        This function sets the module-level ``_proxy`` singleton.  Only one
+        proxy instance per process is supported.  If ``create_app()`` is
+        called while a proxy already exists (i.e. the singleton is not
+        ``None``), a warning is logged and the previous instance is replaced.
+        Call :func:`reset_proxy_state` between calls to make re-initialization
+        explicit and avoid accidental stale-state bugs.
+    """
     global _proxy
+    if _proxy is not None:
+        logger.warning(
+            "create_app() called while a proxy instance already exists; "
+            "replacing the previous singleton.  Call reset_proxy_state() "
+            "before re-initializing to make this explicit."
+        )
     _proxy = SpeculativeProxy(config)
 
     from .dashboard import handle_dashboard, handle_events, handle_history

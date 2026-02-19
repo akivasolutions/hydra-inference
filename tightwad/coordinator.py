@@ -89,12 +89,22 @@ def start(config: ClusterConfig, model_name: str | None = None) -> int:
     PIDFILE.parent.mkdir(parents=True, exist_ok=True)
     LOGDIR.mkdir(parents=True, exist_ok=True)
 
+    # Open the log file, pass it to Popen (child inherits the FD), then
+    # immediately close the parent-side reference.  The child process keeps
+    # the file open as long as it runs, which is intentional.  Closing the
+    # parent's copy prevents FD accumulation when start() is called
+    # repeatedly (e.g. during model swaps that call swap_model()).
     log_fh = open(COORDINATOR_LOG, "a")
-    proc = subprocess.Popen(
-        args,
-        stdout=log_fh,
-        stderr=log_fh,
-    )
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdout=log_fh,
+            stderr=log_fh,
+        )
+    finally:
+        # Always release the parent-side reference, even if Popen fails.
+        log_fh.close()
+
     PIDFILE.write_text(str(proc.pid))
 
     return proc.pid

@@ -21,6 +21,7 @@ from tightwad.swarm_transfer import (
     TokenAuthMiddleware,
     IPFilterMiddleware,
     create_seeder_app,
+    reset_seeder_state,
 )
 
 
@@ -495,3 +496,81 @@ class TestIPFilter:
         resp = client.get("/health", headers={"Authorization": "Bearer mytoken"})
         # TestClient sends "testclient" as client addr, can't match 0.0.0.0/0
         assert resp.status_code == 403
+
+
+# --- Seeder uninitialized (CQ-4 regression: assert → 503) ---
+
+
+class TestSeederUninitialized:
+    """Verify that handlers return HTTP 503 when the seeder is not initialized.
+
+    Previously these handlers used ``assert`` statements, which are stripped
+    by ``python -O``.  The fix replaces them with explicit ``if`` checks that
+    return 503 Service Unavailable instead of raising AttributeError or
+    propagating as an unhandled 500.
+    """
+
+    def setup_method(self):
+        """Reset seeder globals before each test."""
+        reset_seeder_state()
+
+    def test_manifest_returns_503_when_not_initialized(self):
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+        from tightwad.swarm_transfer import handle_manifest
+
+        app = Starlette(routes=[Route("/manifest", handle_manifest, methods=["GET"])])
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/manifest")
+        assert resp.status_code == 503
+
+    def test_bitfield_returns_503_when_not_initialized(self):
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+        from tightwad.swarm_transfer import handle_bitfield
+
+        app = Starlette(routes=[Route("/bitfield", handle_bitfield, methods=["GET"])])
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/bitfield")
+        assert resp.status_code == 503
+
+    def test_piece_returns_503_when_not_initialized(self):
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+        from tightwad.swarm_transfer import handle_piece
+
+        app = Starlette(routes=[Route("/pieces/{index:int}", handle_piece, methods=["GET"])])
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/pieces/0")
+        assert resp.status_code == 503
+
+    def test_health_returns_503_when_not_initialized(self):
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+        from tightwad.swarm_transfer import handle_health
+
+        app = Starlette(routes=[Route("/health", handle_health, methods=["GET"])])
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/health")
+        assert resp.status_code == 503
+
+    def test_reset_seeder_state_clears_globals(self, sample_file, sample_manifest):
+        """reset_seeder_state() leaves globals as None after a create_seeder_app() call."""
+        import tightwad.swarm_transfer as st
+
+        bf = PieceBitfield.load_or_create(
+            sample_file.parent / f"{sample_file.name}.tightwad.pieces",
+            sample_manifest.num_pieces,
+        )
+        create_seeder_app(sample_file, sample_manifest, bf)
+        assert st._seeder_manifest is not None
+
+        reset_seeder_state()
+        assert st._seeder_manifest is None
+        assert st._seeder_bitfield is None
+        assert st._seeder_model_path is None
+        assert st._seeder_start_time == 0.0

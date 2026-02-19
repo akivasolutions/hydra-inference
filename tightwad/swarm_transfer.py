@@ -96,19 +96,20 @@ _seeder_start_time: float = 0.0
 
 
 async def handle_manifest(request: Request) -> JSONResponse:
-    assert _seeder_manifest is not None
+    if _seeder_manifest is None:
+        return Response(status_code=503, content="Seeder not initialized")
     return JSONResponse(_seeder_manifest.to_dict())
 
 
 async def handle_bitfield(request: Request) -> JSONResponse:
-    assert _seeder_bitfield is not None
+    if _seeder_bitfield is None:
+        return Response(status_code=503, content="Seeder not initialized")
     return JSONResponse({"have": sorted(_seeder_bitfield.have)})
 
 
 async def handle_piece(request: Request) -> Response:
-    assert _seeder_manifest is not None
-    assert _seeder_bitfield is not None
-    assert _seeder_model_path is not None
+    if _seeder_manifest is None or _seeder_bitfield is None or _seeder_model_path is None:
+        return Response(status_code=503, content="Seeder not initialized")
 
     index = int(request.path_params["index"])
 
@@ -127,8 +128,8 @@ async def handle_piece(request: Request) -> Response:
 
 
 async def handle_health(request: Request) -> JSONResponse:
-    assert _seeder_manifest is not None
-    assert _seeder_bitfield is not None
+    if _seeder_manifest is None or _seeder_bitfield is None:
+        return Response(status_code=503, content="Seeder not initialized")
     return JSONResponse({
         "status": "ok",
         "model": _seeder_manifest.model,
@@ -140,6 +141,20 @@ async def handle_health(request: Request) -> JSONResponse:
     })
 
 
+def reset_seeder_state() -> None:
+    """Reset all module-level seeder globals to their uninitialized values.
+
+    Call this between tests or before re-initializing the seeder to prevent
+    stale state from a previous ``create_seeder_app()`` call leaking into
+    subsequent requests.
+    """
+    global _seeder_manifest, _seeder_bitfield, _seeder_model_path, _seeder_start_time
+    _seeder_manifest = None
+    _seeder_bitfield = None
+    _seeder_model_path = None
+    _seeder_start_time = 0.0
+
+
 def create_seeder_app(
     model_path: Path,
     manifest: SwarmManifest,
@@ -147,6 +162,14 @@ def create_seeder_app(
     token: str | None = None,
     allowed_ips: list[str] | None = None,
 ) -> Starlette:
+    """Create and configure the seeder ASGI application.
+
+    .. note::
+        This function populates module-level globals (``_seeder_manifest``,
+        ``_seeder_bitfield``, etc.) that are shared by all request handlers.
+        Only one seeder instance per process is supported.  If you need to
+        reset state between test runs, call :func:`reset_seeder_state` first.
+    """
     global _seeder_manifest, _seeder_bitfield, _seeder_model_path, _seeder_start_time
     _seeder_manifest = manifest
     _seeder_bitfield = bitfield
