@@ -656,7 +656,7 @@ tightwad swarm pull ~/models/Qwen3-32B-Q4_K_M.gguf \
 tightwad swarm status ~/models/Qwen3-32B-Q4_K_M.gguf
 ```
 
-See the [Swarm Transfer wiki page](https://github.com/akivasolutions/tightwad/wiki/Swarm-Transfer) for full architecture, rarest-first piece selection, and bitfield tracking details.
+See the [Swarm Transfer](#swarm-transfer) section above for architecture details on rarest-first piece selection and bitfield tracking.
 
 ## Why Tightwad?
 
@@ -764,6 +764,8 @@ Global option: `-c /path/to/cluster.yaml` or `TIGHTWAD_CONFIG` env var.
 
 All endpoints support `stream: true` for SSE streaming. The chat UI at `/` provides an instant browser-based interface with streaming — no additional software required.
 
+> **⚠️ Chat Template Compatibility:** The `/v1/chat/completions` endpoint uses the **Qwen3 chat template** (`<|im_start|>` / `<|im_end|>` format) hardcoded in `tightwad/proxy.py`. This works correctly with Qwen3 models (e.g. `qwen3:8b`, `qwen3:32b`). If you are using a **Llama, Mistral, Phi, or other model family**, use the `/v1/completions` endpoint with a pre-formatted prompt instead — mismatched templates result in near-zero acceptance rates with no clear error. Configurable chat template support is tracked in issue [#CQ-2](https://github.com/akivasolutions/tightwad/issues).
+
 ## Hardware Setup
 
 ### RPC Workers
@@ -815,7 +817,7 @@ llama-server -m model.gguf --host 0.0.0.0 --port 8090 -ngl 999 \
 
 ## Benchmarking
 
-Benchmark scripts measure acceptance rates and wall-clock speedup across model pairs. See the [Benchmarking wiki page](https://github.com/akivasolutions/tightwad/wiki/Benchmarking) for full methodology and reproduction instructions.
+Benchmark scripts measure acceptance rates and wall-clock speedup across model pairs. See the scripts in the `benchmarks/` directory and `scripts/benchmark_proxy.py` for full methodology and reproduction instructions.
 
 ```bash
 # Multi-config benchmark (local Ollama + cloud APIs)
