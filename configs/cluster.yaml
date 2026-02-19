@@ -54,6 +54,19 @@ proxy:
   port: 8088
   max_draft_tokens: 32
   fallback_on_draft_failure: true
+
+  # --- SSRF protection (SEC-5) ---
+  # Tightwad validates every upstream URL before opening connections.
+  # Dangerous schemes (file://, gopher://, ftp://, etc.) are ALWAYS blocked.
+  # Private/internal IP ranges (127.x, 10.x, 172.16-31.x, 192.168.x,
+  # 169.254.x) are allowed by default because homelab deployments commonly
+  # target LAN servers.
+  #
+  # Set allow_private_upstream: false to enforce strict SSRF blocking and
+  # reject any upstream URL that resolves to a private/internal IP address.
+  # This is the recommended setting for production or internet-facing proxies.
+  allow_private_upstream: true  # false = strict mode; true = homelab mode (default)
+
   # Optional: require Bearer-token auth on all /v1/ endpoints.
   # Recommended whenever the proxy is reachable beyond localhost.
   # Set via env var: TIGHTWAD_PROXY_TOKEN=your-secret-token

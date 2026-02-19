@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger("tightwad.config")
 
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "configs" / "cluster.yaml"
@@ -62,6 +65,18 @@ class ProxyConfig:
     #: When unset the proxy operates in open (unauthenticated) mode and logs
     #: a startup warning — this preserves backward compatibility.
     auth_token: str | None = None
+    #: Allow upstream URLs that resolve to private / internal IP ranges.
+    #:
+    #: Tightwad's most common deployment targets LAN servers (e.g.
+    #: ``http://192.168.1.10:11434``) so the private-IP SSRF check defaults to
+    #: ``True`` (opted in / allowed).  Set this to ``False`` in environments
+    #: where the proxy should never reach internal infrastructure.
+    #:
+    #: The scheme check (http/https only) is **always** enforced regardless of
+    #: this flag.
+    #:
+    #: Audit ref: SEC-5 / issue #7
+    allow_private_upstream: bool = True
 
 
 @dataclass
@@ -113,6 +128,12 @@ def load_proxy_from_env() -> ProxyConfig | None:
 
     Returns None if required env vars (TIGHTWAD_DRAFT_URL, TIGHTWAD_TARGET_URL)
     are not set.
+
+    Raises
+    ------
+    ValueError
+        If a supplied URL fails SSRF validation (bad scheme, private IP when
+        not allowed, etc.).
     """
     draft_url = os.environ.get("TIGHTWAD_DRAFT_URL")
     target_url = os.environ.get("TIGHTWAD_TARGET_URL")
@@ -125,6 +146,20 @@ def load_proxy_from_env() -> ProxyConfig | None:
         os.environ.get("TIGHTWAD_PROXY_TOKEN")
         or os.environ.get("TIGHTWAD_TOKEN")
         or None
+    )
+
+    # TIGHTWAD_ALLOW_PRIVATE_UPSTREAM: set to "false" / "0" / "no" to
+    # enforce private-IP blocking even in env-var mode.  Defaults to True
+    # so that homelab LAN URLs continue to work without extra configuration.
+    _priv_raw = os.environ.get("TIGHTWAD_ALLOW_PRIVATE_UPSTREAM", "true").lower()
+    allow_private = _priv_raw not in ("false", "0", "no")
+
+    # Validate URLs before building the config (SSRF: SEC-5)
+    _validate_proxy_urls(
+        draft_url=draft_url,
+        target_url=target_url,
+        allow_private=allow_private,
+        source="environment variable",
     )
 
     return ProxyConfig(
@@ -142,7 +177,54 @@ def load_proxy_from_env() -> ProxyConfig | None:
         port=int(os.environ.get("TIGHTWAD_PORT", "8088")),
         max_draft_tokens=int(os.environ.get("TIGHTWAD_MAX_DRAFT_TOKENS", "32")),
         auth_token=auth_token,
+        allow_private_upstream=allow_private,
     )
+
+
+def _validate_proxy_urls(
+    *,
+    draft_url: str,
+    target_url: str,
+    drafters: list[str] | None = None,
+    allow_private: bool,
+    source: str = "config",
+) -> None:
+    """Run SSRF validation on all proxy upstream URLs.
+
+    Parameters
+    ----------
+    draft_url:
+        The draft model's upstream URL.
+    target_url:
+        The target model's upstream URL.
+    drafters:
+        Optional list of additional drafter URLs to validate.
+    allow_private:
+        Forwarded to :func:`~tightwad.ssrf.validate_upstream_url`.
+    source:
+        Human-readable description of where the URLs came from (used in
+        log messages and error context).
+
+    Raises
+    ------
+    ValueError
+        If any URL fails SSRF validation.
+    """
+    # Lazy import to avoid circular dependencies at module load time.
+    from .ssrf import validate_upstream_url
+
+    endpoints = [("proxy.draft", draft_url), ("proxy.target", target_url)]
+    for label, url in (drafters or []):
+        endpoints.append((label, url))
+
+    for label, url in endpoints:
+        try:
+            validate_upstream_url(url, allow_private=allow_private)
+        except ValueError as exc:
+            raise ValueError(
+                f"SSRF validation failed for {label} URL from {source}: {exc}"
+            ) from exc
+        logger.debug("ssrf: %s URL %r validated OK (allow_private=%s)", label, url, allow_private)
 
 
 def load_config(path: str | Path | None = None) -> ClusterConfig:
@@ -207,13 +289,15 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         p = raw["proxy"]
         draft = p["draft"]
         target = p["target"]
-        drafters = []
-        for d in p.get("drafters", []):
-            drafters.append(ServerEndpoint(
+        drafter_endpoints = []
+        drafter_url_pairs: list[tuple[str, str]] = []
+        for i, d in enumerate(p.get("drafters", [])):
+            drafter_endpoints.append(ServerEndpoint(
                 url=d["url"],
                 model_name=d["model_name"],
                 backend=d.get("backend", "llamacpp"),
             ))
+            drafter_url_pairs.append((f"proxy.drafters[{i}]", d["url"]))
 
         # auth_token: read from YAML, then fall back to env vars so that
         # tokens can be injected at runtime without editing the config file.
@@ -226,6 +310,21 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
         # YAML value takes precedence; env var is the fallback.
         resolved_token = yaml_token or env_token
 
+        # allow_private_upstream defaults to True so that common homelab
+        # configs (targeting LAN addresses like 192.168.x.x) work without
+        # any extra config.  Operators who want strict SSRF enforcement can
+        # set allow_private_upstream: false in cluster.yaml.
+        allow_private = p.get("allow_private_upstream", True)
+
+        # Validate all upstream URLs before constructing clients (SSRF: SEC-5).
+        _validate_proxy_urls(
+            draft_url=draft["url"],
+            target_url=target["url"],
+            drafters=drafter_url_pairs,
+            allow_private=allow_private,
+            source=str(config_path),
+        )
+
         proxy = ProxyConfig(
             draft=ServerEndpoint(url=draft["url"], model_name=draft["model_name"], backend=draft.get("backend", "llamacpp")),
             target=ServerEndpoint(url=target["url"], model_name=target["model_name"], backend=target.get("backend", "llamacpp")),
@@ -233,8 +332,9 @@ def load_config(path: str | Path | None = None) -> ClusterConfig:
             port=p.get("port", 8088),
             max_draft_tokens=p.get("max_draft_tokens", 8),
             fallback_on_draft_failure=p.get("fallback_on_draft_failure", True),
-            drafters=drafters,
+            drafters=drafter_endpoints,
             auth_token=resolved_token,
+            allow_private_upstream=allow_private,
         )
 
     return ClusterConfig(
