@@ -78,7 +78,7 @@ _KV_UINT64 = 10
 _KV_INT64 = 11
 _KV_FLOAT64 = 12
 
-GGUF_MAGIC = 0x46475547  # "GGUF" in little-endian
+GGUF_MAGIC = 0x46554747  # "GGUF" as little-endian uint32
 
 # ---------------------------------------------------------------------------
 # Data classes
