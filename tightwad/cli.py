@@ -27,6 +27,7 @@ console = Console()
 
 
 @click.group()
+@click.version_option(package_name="tightwad")
 @click.option(
     "-c", "--config",
     envvar="TIGHTWAD_CONFIG",
@@ -48,12 +49,68 @@ def _load(ctx) -> "ClusterConfig":
 @click.option("--subnet", default=None, help="Subnet to scan (e.g. 192.168.1.0/24, auto-detected if omitted)")
 @click.option("--port", "extra_ports", multiple=True, type=int, help="Additional ports to scan (repeatable)")
 @click.option("-o", "--output", default="configs/cluster.yaml", type=click.Path(), help="Output config path")
-def init(subnet, extra_ports, output):
+@click.option("--draft-url", default=None, help="Draft server URL (non-interactive mode)")
+@click.option("--draft-model", default=None, help="Draft model name (required with --draft-url)")
+@click.option("--draft-backend", default=None, help="Draft backend: ollama or llamacpp (auto-detected from port)")
+@click.option("--target-url", default=None, help="Target server URL (non-interactive mode)")
+@click.option("--target-model", default=None, help="Target model name (required with --target-url)")
+@click.option("--target-backend", default=None, help="Target backend: ollama or llamacpp (auto-detected from port)")
+@click.option("--max-draft-tokens", default=32, type=int, help="Max tokens per draft round (default: 32)")
+@click.option("-y", "--yes", is_flag=True, help="Overwrite existing config without prompting")
+def init(subnet, extra_ports, output, draft_url, draft_model, draft_backend,
+         target_url, target_model, target_backend, max_draft_tokens, yes):
     """Auto-discover LAN inference servers and generate cluster.yaml."""
     import asyncio
+    from urllib.parse import urlparse
 
     output_path = Path(output)
-    if output_path.exists():
+
+    # Non-interactive mode: --draft-url + --target-url
+    if draft_url and target_url:
+        if not draft_model:
+            raise click.UsageError("--draft-model is required when using --draft-url")
+        if not target_model:
+            raise click.UsageError("--target-model is required when using --target-url")
+
+        draft_parsed = urlparse(draft_url)
+        target_parsed = urlparse(target_url)
+        d_backend = draft_backend or init_wizard.detect_backend(draft_url)
+        t_backend = target_backend or init_wizard.detect_backend(target_url)
+
+        draft_server = init_wizard.DiscoveredServer(
+            host=draft_parsed.hostname,
+            port=draft_parsed.port or 80,
+            backend=d_backend,
+            models=[draft_model],
+        )
+        target_server = init_wizard.DiscoveredServer(
+            host=target_parsed.hostname,
+            port=target_parsed.port or 80,
+            backend=t_backend,
+            models=[target_model],
+        )
+
+        yaml_str = init_wizard.generate_cluster_yaml(
+            draft_server=draft_server,
+            draft_model=draft_model,
+            target_server=target_server,
+            target_model=target_model,
+            max_draft_tokens=max_draft_tokens,
+        )
+
+        if output_path.exists() and not yes:
+            overwrite = input(f"{output_path} already exists. Overwrite? [y/N] ").strip().lower()
+            if overwrite != "y":
+                console.print("[dim]Cancelled.[/dim]")
+                return
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(yaml_str)
+        console.print(f"[green]✓[/green] Config written to {output_path}")
+        return
+
+    # Interactive mode: scan LAN
+    if output_path.exists() and not yes:
         overwrite = input(f"{output_path} already exists. Overwrite? [y/N] ").strip().lower()
         if overwrite != "y":
             console.print("[dim]Cancelled.[/dim]")
