@@ -135,6 +135,37 @@ proxy:
     backend: llamacpp
 ```
 
+**For RPC cluster with ROCm multi-GPU**, add coordinator config:
+
+```yaml
+coordinator:
+  host: 0.0.0.0
+  port: 8080
+  backend: hip                         # "hip" for AMD, "cuda" for NVIDIA
+  gpus:
+    - name: "7900 XTX #0"
+      vram_gb: 24
+    - name: "7900 XTX #1"
+      vram_gb: 24
+  # Optional: extra CLI args for llama-server
+  extra_args: ["--no-mmap", "--no-warmup"]
+  # Optional: env vars passed to llama-server (overrides auto-presets)
+  env:
+    HSA_ENABLE_SDMA: "1"              # override if your board handles SDMA fine
+```
+
+**Backend presets:** Tightwad auto-injects `HSA_ENABLE_SDMA=0` and `GPU_MAX_HW_QUEUES=1` for `hip` backends with 2+ GPUs. This prevents SDMA hangs on most AMD boards without any manual config. Explicit `env` values in YAML override presets.
+
+**`flash_attn`** accepts `true`/`false` or string values `"on"`/`"off"`/`"auto"`:
+
+```yaml
+models:
+  qwen3-32b:
+    path: /models/Qwen3-32B-Q4_K_M.gguf
+    flash_attn: "auto"                 # let llama-server decide
+    default: true
+```
+
 ### Step 4: Start the cluster
 
 ```bash
@@ -211,6 +242,7 @@ curl http://localhost:8088/v1/tightwad/status
 | Proxy starts but no speedup | `max_draft_tokens` too low | Set `max_draft_tokens: 32` in cluster.yaml |
 | Draft machine keeps failing | Hardware too slow | CPU draft needs ≥15 tok/s to help. Try a smaller model (0.5B) |
 | "Model not found" | Model not pulled on remote | SSH to that machine, run `ollama pull <model>` |
+| llama-server hangs on ROCm multi-GPU | SDMA engine hang | Tightwad auto-injects `HSA_ENABLE_SDMA=0` for `hip` + 2+ GPUs. If running manually: `HSA_ENABLE_SDMA=0 GPU_MAX_HW_QUEUES=1 llama-server ...` |
 
 ---
 
