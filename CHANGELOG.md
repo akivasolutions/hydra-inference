@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- GitHub Actions CI workflow with Python 3.10–3.13 test matrix (#18)
+- CHANGELOG.md, CONTRIBUTING.md, and CODE_OF_CONDUCT.md (#19)
+- GitHub issue templates (bug report, feature request) and PR template (#20)
+- Example configs: minimal spec decode, CPU draft, two-GPU, mixed-vendor, combined mode (#21)
+- Documentation: quickstart guide, configuration reference, architecture overview (#22)
+- README badges: PyPI version, CI status, license, Python versions (#23)
+
 ## [0.1.2] - 2026-02-18
 
 ### Added
@@ -13,11 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SECURITY.md with vulnerability reporting guidelines
 - Docker healthcheck and persistent log volume
 
+### Security
+- **Bearer-token authentication for proxy API** — optional `auth_token` config or `TIGHTWAD_PROXY_TOKEN` env var; logs warning if proxy starts without auth (#6)
+- **SSRF protection on upstream URLs** — scheme allowlist (http/https only), optional private-IP blocking via `allow_private_upstream` config, DNS-rebinding protection (#7)
+- **Input validation and request size limits** — `max_tokens_limit` (default 16384) rejects excessive generation requests; `max_body_size` (default 10 MB) rejects oversized payloads before buffering (#8)
+- Fixed XSS vulnerability in live dashboard (SEC-2, #9)
+- Code hardening: replaced assert guards with proper exceptions, fixed log file descriptor leak (#10)
+
 ### Fixed
 - Broken wiki links in documentation
-- XSS vulnerability in live dashboard (SEC-2)
-- Code hardening: replaced assert guards, fixed log file descriptor leak
 - Replaced nonexistent Qwen3-72B references with Qwen3-32B
+- Sanitized example configs and scripts (removed hardcoded IPs)
 
 ## [0.1.1] - 2026-02-17
 
@@ -47,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for CUDA, ROCm, and CPU backends
 - OpenAI-compatible API endpoint
 
+[Unreleased]: https://github.com/akivasolutions/tightwad/compare/v0.1.2...HEAD
 [0.1.2]: https://github.com/akivasolutions/tightwad/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/akivasolutions/tightwad/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/akivasolutions/tightwad/releases/tag/v0.1.0
