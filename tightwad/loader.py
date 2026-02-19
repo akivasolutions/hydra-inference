@@ -127,7 +127,10 @@ def prewarm_sequential(
     model_path = str(model_path)
     t0 = time.monotonic()
 
-    fd = os.open(model_path, os.O_RDONLY)
+    flags = os.O_RDONLY
+    if _SYSTEM == "windows":
+        flags |= os.O_BINARY  # prevent text-mode truncation at 0x1A
+    fd = os.open(model_path, flags)
     try:
         # Advisory hint on Linux: sequential access pattern
         if _SYSTEM == "linux":
