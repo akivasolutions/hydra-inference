@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: quickstart guide, configuration reference, architecture overview (#22)
 - README badges: PyPI version, CI status, license, Python versions (#23)
 
+## [0.1.4] - 2026-02-18
+
+### Added
+- **`tightwad load` command** — standalone GGUF loading with pre-warming, memory-aware startup, and post-load RAM reclaim
+- **Pure-Python GGUF parser** (`gguf_reader.py`) — parses GGUF v2/v3 headers, KV metadata, and tensor info without the `gguf` package dependency
+- **Pre-warm lifecycle** (`loader.py`) — sequential page cache warming with `posix_fadvise(SEQUENTIAL)` on Linux before llama-server mmaps the file
+- **Auto pre-warm in `tightwad start`** — when `ram_reclaim` is `auto` or `on` and model > 80% of available RAM, pre-warming is applied automatically
+- `needs_streaming_load()` detection — returns True when model exceeds 80% of (available RAM + swap)
+- `TIGHTWAD_DISABLE_PREWARM=1` environment variable kill-switch
+- `LoadResult` dataclass with timing, throughput, and peak RSS metrics
+- `model_summary()` for extracting arch, layers, quant, context length from GGUF headers
+
 ## [0.1.3] - 2026-02-18
 
 ### Added
@@ -75,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for CUDA, ROCm, and CPU backends
 - OpenAI-compatible API endpoint
 
-[Unreleased]: https://github.com/akivasolutions/tightwad/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/akivasolutions/tightwad/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/akivasolutions/tightwad/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/akivasolutions/tightwad/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/akivasolutions/tightwad/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/akivasolutions/tightwad/compare/v0.1.0...v0.1.1

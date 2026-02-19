@@ -199,13 +199,39 @@ def start_and_reclaim(
     -------
     (pid, ReclaimResult or None)
     """
-    from .reclaim import reclaim_ram, should_reclaim
+    from .reclaim import reclaim_ram, should_reclaim, get_available_ram_bytes
 
-    pid = start(config, model_name)
     mode = ram_reclaim or config.ram_reclaim
 
     if mode == "off":
+        pid = start(config, model_name)
         return pid, None
+
+    # Check if model needs streaming load (> 80% of available RAM)
+    model = (
+        config.models.get(model_name) if model_name else config.default_model()
+    )
+    model_path = model.path if model else None
+
+    if mode in ("auto", "on") and model_path:
+        try:
+            model_file_size = Path(model_path).stat().st_size
+        except OSError:
+            model_file_size = 0
+
+        if model_file_size > 0:
+            from .loader import needs_streaming_load, load_model
+            available = get_available_ram_bytes()
+            if needs_streaming_load(model_file_size, available):
+                # Model won't fit comfortably — pre-warm + start + reclaim
+                result = load_model(
+                    config, model_name, ram_reclaim=mode,
+                    wait_timeout=wait_timeout,
+                )
+                return result.pid, result.reclaim_result
+
+    # Normal path: model fits in RAM, start then optionally reclaim
+    pid = start(config, model_name)
 
     # Wait for /health to return 200 before reclaiming
     deadline = time.monotonic() + wait_timeout
@@ -223,12 +249,6 @@ def start_and_reclaim(
             wait_timeout,
         )
         return pid, None
-
-    # Resolve model path for auto/on decision and for reclaim
-    model = (
-        config.models.get(model_name) if model_name else config.default_model()
-    )
-    model_path = model.path if model else None
 
     if mode == "auto":
         model_file_size = 0

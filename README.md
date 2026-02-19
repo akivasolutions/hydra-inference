@@ -810,7 +810,20 @@ That GTX 770 from 2013? Put it to work drafting tokens. The old Xeon server with
 
 llama-server mmaps the entire GGUF file into RAM before copying tensors to VRAM. On Windows, pages stay resident forever. On Linux, pages linger in the page cache. This means a 16 GB RAM machine can't load an 18 GB model even if the GPU has 24 GB VRAM.
 
-Tightwad solves this with two commands:
+Tightwad solves this with three tools:
+
+### `tightwad load` — Pre-warm + Load + Reclaim
+
+For standalone GGUF loading with memory-aware pre-warming:
+
+```bash
+tightwad load /path/to/model.gguf                    # auto pre-warm if needed
+tightwad load /path/to/model.gguf --no-prewarm        # skip pre-warming
+```
+
+When the model exceeds 80% of available RAM, tightwad reads the file sequentially (with `posix_fadvise(SEQUENTIAL)` on Linux) to warm the page cache before llama-server mmaps it. After `/health` confirms the model is in VRAM, RAM is reclaimed.
+
+This also happens automatically via `tightwad start` when `ram_reclaim` is `auto` or `on`.
 
 ### `tightwad reclaim` — Free RAM After Loading
 
@@ -896,6 +909,8 @@ Model: qwen3-32b-Q4_K_M.gguf (18.1 GB)
 | `tightwad start --ram-reclaim auto` | Start coordinator with RAM reclaim (off/on/auto) |
 | `tightwad reclaim` | Reclaim RAM from running coordinator after model loads to VRAM |
 | `tightwad reclaim --pid PID` | Reclaim RAM from any llama-server process |
+| `tightwad load <model.gguf>` | Pre-warm + load GGUF with memory-aware startup |
+| `tightwad load <model.gguf> --no-prewarm` | Load without sequential pre-warming |
 | `tightwad tune` | Diagnose system RAM/swap readiness for large models |
 | `tightwad tune --model <model.gguf>` | Check if system can handle a specific model |
 | `tightwad benchmark` | Benchmark the running coordinator |
@@ -1015,6 +1030,8 @@ tightwad/
 ├── doctor.py        # Diagnostic checks (config, binaries, network, versions)
 ├── coordinator.py   # llama-server lifecycle management
 ├── reclaim.py       # Cross-platform RAM reclaim after model loading
+├── loader.py        # Pre-warm + memory-aware model loading lifecycle
+├── gguf_reader.py   # Pure-Python GGUF v2/v3 binary parser (no gguf dependency)
 ├── tune.py          # System RAM/swap diagnostics and tuning recommendations
 ├── worker.py        # RPC worker health checks
 ├── proxy.py         # Speculative decoding proxy server
@@ -1036,6 +1053,8 @@ tests/
 ├── test_config.py
 ├── test_coordinator.py
 ├── test_reclaim.py
+├── test_gguf_reader.py
+├── test_loader.py
 ├── test_tune.py
 ├── test_speculation.py
 ├── test_proxy.py

@@ -456,6 +456,142 @@ def tune(model_path):
             console.print()
 
 
+def _parse_size(s: str) -> int:
+    """Parse a human-readable size string to bytes. E.g. '2G', '4096M', '2147483648'."""
+    s = s.strip().upper()
+    multipliers = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    if s and s[-1] in multipliers:
+        return int(float(s[:-1]) * multipliers[s[-1]])
+    return int(s)
+
+
+@cli.command("load")
+@click.argument("model_path", type=click.Path(exists=True))
+@click.option("--mem-limit", default=None, type=str,
+              help="Memory limit (e.g. '2G', '4096M'). Reserved for v0.1.5 --force-constrain.")
+@click.option("--no-prewarm", is_flag=True, help="Skip sequential pre-warming")
+@click.option("--ram-reclaim", type=click.Choice(["off", "on", "auto"]), default=None,
+              help="RAM reclaim mode after loading (default: auto)")
+@click.option("--timeout", default=300.0, type=float, help="Health check timeout in seconds")
+@click.pass_context
+def load_cmd(ctx, model_path, mem_limit, no_prewarm, ram_reclaim, timeout):
+    """Load a GGUF model with pre-warming and memory-aware startup.
+
+    Pre-warms the page cache sequentially before llama-server mmaps the file,
+    then reclaims RAM after the model loads to VRAM. Use this for standalone
+    loading of any GGUF file.
+
+    For models configured in cluster.yaml, use 'tightwad start' instead —
+    it integrates pre-warming automatically when ram_reclaim is 'auto' or 'on'.
+    """
+    from rich.progress import Progress, BarColumn, TextColumn, SpinnerColumn
+    from .loader import (
+        load_model, needs_streaming_load, prewarm_sequential,
+    )
+    from .reclaim import get_available_ram_bytes
+    from .gguf_reader import read_header, model_summary
+
+    model_path = Path(model_path)
+    file_size = model_path.stat().st_size
+    model_size_gb = file_size / (1024**3)
+
+    if mem_limit is not None:
+        console.print(
+            "[yellow]--mem-limit is reserved for v0.1.5 (--force-constrain). "
+            "Ignored in this release.[/yellow]"
+        )
+
+    # Parse GGUF header for display
+    gguf_info = None
+    try:
+        header = read_header(model_path)
+        gguf_info = model_summary(header)
+    except Exception:
+        pass
+
+    console.print(f"\n[bold]Model:[/bold] {model_path.name}")
+    if gguf_info:
+        parts = []
+        if gguf_info.get("arch"):
+            parts.append(gguf_info["arch"])
+        if gguf_info.get("layers"):
+            parts.append(f"{gguf_info['layers']} layers")
+        if gguf_info.get("quant"):
+            parts.append(gguf_info["quant"])
+        parts.append(f"{model_size_gb:.1f} GB")
+        console.print(f"  {', '.join(parts)}")
+    else:
+        console.print(f"  Size: {model_size_gb:.1f} GB")
+
+    available = get_available_ram_bytes()
+    available_gb = available / (1024**3)
+    console.print(f"\n[bold]System:[/bold] {available_gb:.1f} GB RAM available")
+
+    needs_prewarm = needs_streaming_load(file_size, available)
+    if needs_prewarm and not no_prewarm:
+        console.print(f"  Strategy: pre-warm + reclaim (model > 80% of available RAM)")
+    elif no_prewarm:
+        console.print(f"  Strategy: skip pre-warm (--no-prewarm)")
+    else:
+        console.print(f"  Strategy: direct load (model fits in RAM)")
+
+    # Pre-warm with progress bar
+    if needs_prewarm and not no_prewarm:
+        console.print()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed:.1f}/{task.total:.1f} GB"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Pre-warming...", total=model_size_gb)
+
+            def on_progress(bytes_read, total):
+                progress.update(task, completed=bytes_read / (1024**3))
+
+            elapsed = prewarm_sequential(
+                model_path, file_size, progress_callback=on_progress,
+            )
+            throughput = model_size_gb / elapsed if elapsed > 0 else 0
+
+        console.print(f"  Pre-warm: {elapsed:.1f}s ({throughput:.2f} GB/s)")
+
+    # Start coordinator via config
+    config = _load(ctx)
+    mode = ram_reclaim or config.ram_reclaim
+
+    console.print(f"\n[bold]Starting coordinator...[/bold]")
+    try:
+        result = load_model(
+            config,
+            prewarm=False,  # already pre-warmed above
+            ram_reclaim=mode,
+            wait_timeout=timeout,
+        )
+    except (ValueError, RuntimeError) as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    if result.healthy:
+        console.print(f"  Health check: [green]OK[/green] ({result.load_time_seconds:.1f}s)")
+    else:
+        console.print(f"  Health check: [yellow]timeout[/yellow] ({timeout:.0f}s)")
+
+    if result.reclaim_result:
+        r = result.reclaim_result
+        if r.method != "skipped":
+            console.print(
+                f"  [green]Reclaimed {r.reclaimed_mb:,.0f} MB RAM ({r.method})[/green]"
+            )
+
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  PID:       {result.pid}")
+    console.print(f"  Peak RAM:  {result.peak_rss_mb:.1f} MB")
+    console.print(f"  Model:     {result.model_size_gb:.1f} GB")
+    console.print(f"  Load time: {result.load_time_seconds:.1f}s")
+
+
 # --- Proxy subcommand group ---
 
 
