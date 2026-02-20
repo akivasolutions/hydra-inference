@@ -68,14 +68,13 @@ def test_build_args_rpc(config):
     assert "192.168.1.100:50053" in rpc_val
 
 
-def test_build_args_flash_attn_bare_flag(config):
-    """--flash-attn must be a bare flag with no trailing value argument."""
+def test_build_args_flash_attn_value(config):
+    """--flash-attn must be followed by 'on' (llama.cpp b8112+ format)."""
     model = config.default_model()
     args = build_server_args(config, model)
     idx = args.index("--flash-attn")
-    # Next arg must start with '-' or --flash-attn is the last arg
-    assert idx == len(args) - 1 or args[idx + 1].startswith("-"), (
-        f"--flash-attn is not bare: next arg is {args[idx + 1]!r}"
+    assert args[idx + 1] == "on", (
+        f"--flash-attn should be followed by 'on', got {args[idx + 1]!r}"
     )
 
 

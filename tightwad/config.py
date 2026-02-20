@@ -136,8 +136,17 @@ class ClusterConfig:
         return addrs
 
     def tensor_split(self) -> list[float]:
-        """Calculate --tensor-split proportions from VRAM sizes."""
-        gpus = self.all_gpus
+        """Calculate --tensor-split proportions from VRAM sizes.
+
+        Order: RPC worker GPUs first, then coordinator local GPUs.
+        This matches llama-server's mapping: --rpc workers get the first
+        split slots, local GPUs get the remaining slots.
+        """
+        # Workers first, then coordinator locals
+        gpus: list[GPU] = []
+        for w in self.workers:
+            gpus.extend(w.gpus)
+        gpus.extend(self.coordinator_gpus)
         total = sum(g.vram_gb for g in gpus)
         return [round(g.vram_gb / total, 2) for g in gpus]
 

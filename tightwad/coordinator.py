@@ -72,7 +72,7 @@ def build_server_args(config: ClusterConfig, model: ModelConfig) -> list[str]:
     ]
 
     if model.flash_attn:
-        args.append("--flash-attn")
+        args.extend(["--flash-attn", "on"])
 
     # RPC workers
     rpc_addrs = config.rpc_addresses

@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend presets** — auto-inject known-good environment variables per backend (e.g. `HSA_ENABLE_SDMA=0` and `GPU_MAX_HW_QUEUES=1` for ROCm multi-GPU), preventing SDMA hangs without manual configuration
 - **`extra_args` and `env` coordinator config** — passthrough fields in `cluster.yaml` for backend-specific CLI args and environment variables; user values override presets
 
+### Fixed
+- **`--flash-attn on` value format** — llama.cpp b8112+ changed `--flash-attn` from a bare flag to requiring a value (`on|off|auto`). Reverts the v0.1.5 bare-flag change. Without this fix, `--flash-attn` consumes the next argument (e.g. `--rpc`) as its value, breaking RPC pool startup
+
 ## [0.3.0] - 2026-02-19
 
 ### Added

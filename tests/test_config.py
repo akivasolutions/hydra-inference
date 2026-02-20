@@ -156,13 +156,12 @@ def _minimal_config(**overrides) -> ClusterConfig:
 
 # -- flash_attn in build_server_args --
 
-def test_flash_attn_true_bare_flag():
-    """flash_attn=True emits --flash-attn as a bare flag (no trailing value)."""
+def test_flash_attn_true_with_value():
+    """flash_attn=True emits --flash-attn on (b8112+ format)."""
     model = ModelConfig(name="m", path="/m.gguf", flash_attn=True)
     args = build_server_args(_minimal_config(), model)
     idx = args.index("--flash-attn")
-    # Next arg must start with '-' or be the last arg (bare flag, no value)
-    assert idx == len(args) - 1 or args[idx + 1].startswith("-")
+    assert args[idx + 1] == "on"
 
 
 def test_flash_attn_false_omitted():
